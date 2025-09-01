@@ -45,15 +45,14 @@ def fetch_ltp(client, exchange, token):
     except:
         return 0.0
 
-# ---- Place order page ----
-def show_place_order():
-    st.header("🛒 Place Order — Definedge")
+# ---- Main code execution (no function wrapping) ----
 
-    client = st.session_state.get("client")
-    if not client:
-        st.error("⚠️ Not logged in. Please login first from Login page.")
-        return
+st.header("🛒 Place Order — Definedge")
 
+client = st.session_state.get("client")
+if not client:
+    st.error("⚠️ Not logged in. Please login first from Login page.")
+else:
     df_symbols = load_master_symbols()
 
     # ---- Exchange selection ----
@@ -139,4 +138,3 @@ def show_place_order():
             st.success(f"✅ Order placed successfully. Order ID: {resp.get('order_id')}")
         else:
             st.error(f"❌ Order placement failed. Response: {resp}")
-            
