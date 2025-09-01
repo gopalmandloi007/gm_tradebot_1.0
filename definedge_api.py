@@ -110,6 +110,12 @@ class DefinedgeClient:
     def gtt_cancel(self, alert_id: str):
         return self.api_get(f"/gttcancel/{alert_id}")
 
+    def oco_cancel(self, alertid: str):
+        return self.api_get(f"/ococancel/{alertid}")
+
+    def oco_modify(self, payload: dict):
+    return self.api_post("/ocomodify", payload)
+
     def historical_csv(self, segment: str, token: str, timeframe: str, frm: str, to: str) -> str:
         url = f"{BASE_DATA}/history/{segment}/{token}/{timeframe}/{frm}/{to}"
         r = self._session.get(url, headers=self._auth_headers(), timeout=self.timeout)
