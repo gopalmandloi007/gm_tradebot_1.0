@@ -327,7 +327,7 @@ try:
 
                     # CANCEL
                     with c2:
-                        if st.button("🛑 Cancel", key=f"oco_cancel_btn_{row['alert_id']}"):
+                        if st.button("🛑 Cancel", key=f"ococancel_btn_{row['alert_id']}"):
                             try:
                                 # Requires client.oco_cancel() in your client wrapper
                                 resp_cancel = client.oco_cancel(_safe_str(row.get("alert_id")))
