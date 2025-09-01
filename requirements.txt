@@ -1,0 +1,7 @@
+streamlit
+requests
+websocket-client
+pyotp
+pandas
+matplotlib
+plotly
