@@ -28,26 +28,20 @@ def select_index_symbol(df, label="Index Symbol"):
 
 def fetch_historical(client, segment, token, days):
     today = datetime.today()
-    from_date_obj = today - timedelta(days=days)
-    from_date = from_date_obj.strftime("%d%m%Y%H%M")
+    from_date = (today - timedelta(days=days*2)).strftime("%d%m%Y%H%M")
     to_date = today.strftime("%d%m%Y%H%M")
     hist_csv = client.historical_csv(segment=segment, token=token, timeframe="day", frm=from_date, to=to_date)
     if not hist_csv.strip():
         return pd.DataFrame()
     hist_df = pd.read_csv(io.StringIO(hist_csv), header=None)
-
     if hist_df.shape[1] == 7:
         hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
     elif hist_df.shape[1] == 6:
         hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
     else:
         return pd.DataFrame()
-
-    # Parse DateTime: ddmmyyyyHHMM
-    hist_df["DateTime"] = pd.to_datetime(
-        hist_df["DateTime"].astype(str), format="%d%m%Y%H%M", errors="coerce"
-    )
-    hist_df = hist_df.dropna(subset=["DateTime"])  # Drop rows with invalid dates
+    # Parse DateTime as per API spec: ddmmyyyyHHMM
+    hist_df["DateTime"] = pd.to_datetime(hist_df["DateTime"].astype(str), format="%d%m%Y%H%M", errors="coerce")
     hist_df = hist_df.sort_values("DateTime")
     hist_df = hist_df.drop_duplicates(subset=["DateTime"])
     hist_df = hist_df.reset_index(drop=True)
@@ -69,35 +63,31 @@ segment_df = df_master[df_master["SEGMENT"] == segment]
 
 # Symbol selection
 stock_row = select_symbol(segment_df, label="Stock Trading Symbol")
+
 # Index selection
 index_row = select_index_symbol(df_master, label="Index Trading Symbol")
 
 # EMA period selection
 st.markdown("#### EMA Periods")
-ema_periods_input = st.text_input("Enter EMA periods (comma separated)", value="10,20,50,100,200")
-try:
-    ema_periods = [int(x.strip()) for x in ema_periods_input.split(",") if x.strip().isdigit()]
-except:
-    ema_periods = [10, 20, 50, 100, 200]  # fallback defaults
+ema_periods = st.text_input("Enter EMA periods (comma separated)", value="10,20,50,100,200")
+ema_periods = [int(x.strip()) for x in ema_periods.split(",") if x.strip().isdigit()]
 
 days_back = st.number_input("Number of Days (candles to fetch)", min_value=20, max_value=600, value=250, step=1)
 rs_sma_period = st.number_input("RS SMA Period", min_value=2, max_value=55, value=20, step=1)
 
 if st.button("Show Chart"):
     try:
-        # Fetch stock data
         df_stock = fetch_historical(client, stock_row["SEGMENT"], stock_row["TOKEN"], days_back)
         if df_stock.empty:
             st.warning(f"No data for: {stock_row['TRADINGSYM']} ({stock_row['TOKEN']}, {stock_row['SEGMENT']})")
             st.stop()
 
-        # Fetch index data
         df_index = fetch_historical(client, index_row["SEGMENT"], index_row["TOKEN"], days_back)
         if df_index.empty:
             st.warning(f"No data for index: {index_row['TRADINGSYM']} ({index_row['TOKEN']}, {index_row['SEGMENT']})")
             st.stop()
 
-        # Ensure data sorted by DateTime
+        # Sort and deduplicate just in case
         df_stock = df_stock.sort_values("DateTime").drop_duplicates(subset=["DateTime"]).reset_index(drop=True)
         df_index = df_index.sort_values("DateTime").drop_duplicates(subset=["DateTime"]).reset_index(drop=True)
 
@@ -108,7 +98,7 @@ if st.button("Show Chart"):
         # --- Candlestick Chart with EMAs ---
         fig1 = go.Figure()
         fig1.add_trace(go.Candlestick(
-            x=df_stock["DateTime"],
+            x=df_stock["DateTime"].dt.date,
             open=df_stock["Open"],
             high=df_stock["High"],
             low=df_stock["Low"],
@@ -117,19 +107,18 @@ if st.button("Show Chart"):
             increasing_line_color='green',
             decreasing_line_color='red'
         ))
-
         for period in ema_periods:
             fig1.add_trace(go.Scatter(
-                x=df_stock["DateTime"],
+                x=df_stock["DateTime"].dt.date, 
                 y=df_stock[f"EMA_{period}"],
                 mode="lines", name=f"EMA {period}",
                 line=dict(width=1.5)
             ))
-
         fig1.update_layout(
             title=f"{stock_row['TRADINGSYM']} Candlestick Chart with EMAs",
             xaxis=dict(
                 title="Date",
+                type="category",  # Remove gaps for missing dates
                 rangeslider=dict(visible=False)
             ),
             yaxis=dict(title="Price"),
@@ -138,13 +127,12 @@ if st.button("Show Chart"):
             template="plotly_white",
             margin=dict(l=10, r=10, t=40, b=10)
         )
-
         st.plotly_chart(fig1, use_container_width=True)
 
-        # --- Volume Chart ---
+        # --- Volume Chart (separate) ---
         fig_vol = go.Figure()
         fig_vol.add_trace(go.Bar(
-            x=df_stock["DateTime"],
+            x=df_stock["DateTime"].dt.date,
             y=df_stock["Volume"],
             name="Volume",
             marker=dict(color="#636EFA"),
@@ -152,21 +140,22 @@ if st.button("Show Chart"):
         ))
         fig_vol.update_layout(
             title=f"{stock_row['TRADINGSYM']} Volume Chart",
-            xaxis=dict(title="Date"),
+            xaxis=dict(
+                title="Date",
+                type="category"  # Remove gaps for missing dates
+            ),
             yaxis=dict(title="Volume"),
             height=300,
             template="plotly_white",
             margin=dict(l=10, r=10, t=40, b=10)
         )
-
         st.plotly_chart(fig_vol, use_container_width=True)
 
-        # --- Relative Strength ---
+        # --- Relative Strength Section ---
         df_stock_rs = df_stock[["DateTime", "Close"]].rename(columns={"Close": "StockClose"})
         df_index_rs = df_index[["DateTime", "Close"]].rename(columns={"Close": "IndexClose"})
         df_rs = pd.merge(df_stock_rs, df_index_rs, on="DateTime", how="inner")
         df_rs = df_rs.sort_values("DateTime").reset_index(drop=True)
-
         if df_rs.empty:
             st.warning("No overlapping dates between stock and index data for RS chart.")
         else:
@@ -175,20 +164,23 @@ if st.button("Show Chart"):
 
             fig2 = go.Figure()
             fig2.add_trace(go.Scatter(
-                x=df_rs["DateTime"],
+                x=df_rs["DateTime"].dt.date, 
                 y=df_rs["RS"],
                 mode="lines", name="Relative Strength",
                 line=dict(color="#1976d2", width=2)
             ))
             fig2.add_trace(go.Scatter(
-                x=df_rs["DateTime"],
+                x=df_rs["DateTime"].dt.date, 
                 y=df_rs["RS_SMA"],
                 mode="lines", name=f"RS SMA {rs_sma_period}",
                 line=dict(color="#d32f2f", width=2, dash='dash')
             ))
             fig2.update_layout(
                 title=f"Relative Strength: {stock_row['TRADINGSYM']} vs {index_row['TRADINGSYM']}",
-                xaxis=dict(title="Date"),
+                xaxis=dict(
+                    title="Date",
+                    type="category"  # Remove gaps for missing dates
+                ),
                 yaxis_title="Relative Strength",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 height=400,
