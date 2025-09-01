@@ -8,7 +8,6 @@ import plotly.graph_objects as go
 
 DEFAULT_TOTAL_CAPITAL = 1400000  # Default capital for % allocation
 
-def show_dashboard():
     st.header("📊 Trading Dashboard — Definedge")
 
     client = st.session_state.get("client")
