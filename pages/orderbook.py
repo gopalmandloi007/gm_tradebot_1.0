@@ -10,7 +10,7 @@ if not client:
     st.error("⚠️ Not logged in. Please login first from the Login page.")
 else:
     try:
-        # Fetch orderbook immediately
+        # Fetch orderbook
         resp = client.get_orders()  # calls /orders
         if not resp:
             st.warning("⚠️ API returned empty response")
@@ -24,24 +24,16 @@ else:
                 # Show columns for debugging
                 st.caption(f"Available columns: {list(df.columns)}")
 
-                # Detect status column
-                status_col = None
-                for col in ["status", "order_status"]:
-                    if col in df.columns:
-                        status_col = col
-                        break
-
-                # Normalize status if present
-                if status_col:
+                # Normalize status
+                if "order_status" in df.columns:
                     df["normalized_status"] = (
-                        df[status_col].astype(str)
+                        df["order_status"].astype(str)
                         .str.replace("_", " ")
-                        .str.replace("-", " ")
                         .str.strip()
                         .str.upper()
                     )
                 else:
-                    df["normalized_status"] = ""
+                    df["normalized_status"] = None
 
                 # --- Full Orderbook ---
                 st.subheader("📋 Complete Orderbook")
@@ -56,8 +48,8 @@ else:
 
                     return (
                         "OPEN" in status_val
-                        or "PARTIAL" in status_val  # catches PARTIALLY FILLED, PARTIAL, etc.
-                        or "PENDING" in status_val
+                        or "PARTIALLY" in status_val
+                        or "PARTIAL" in status_val
                         or pending_qty > 0
                     )
 
@@ -70,7 +62,7 @@ else:
                     display_cols = [
                         "order_id", "tradingsymbol", "order_type",
                         "quantity", "price", "product_type",
-                        status_col if status_col else "pending_qty"
+                        "order_status", "pending_qty"
                     ]
                     display_cols = [c for c in display_cols if c in active_orders.columns]
 
@@ -83,7 +75,7 @@ else:
                             f"**Order ID:** {order['order_id']} | "
                             f"Symbol: {order.get('tradingsymbol','')} | "
                             f"Qty: {order.get('quantity','')} | Price: {order.get('price','')} | "
-                            f"Status: {order.get(status_col,'') if status_col else ''} | "
+                            f"Status: {order.get('order_status','')} | "
                             f"Pending Qty: {order.get('pending_qty','')}"
                         )
 
@@ -95,7 +87,7 @@ else:
                                 try:
                                     cancel_resp = client.cancel_order(order_id=order['order_id'])  # calls /cancel/{id}
                                     st.write("🔎 Cancel API Response:", cancel_resp)
-                                    if str(cancel_resp.get("status", "")).upper() == "SUCCESS":
+                                    if cancel_resp.get("status") == "SUCCESS":
                                         st.success(f"Order {order['order_id']} cancelled successfully ✅")
                                         st.experimental_rerun()
                                     else:
@@ -135,7 +127,7 @@ else:
 
                                         modify_resp = client.modify_order(payload)  # calls /modify
                                         st.write("🔎 Modify API Response:", modify_resp)
-                                        if str(modify_resp.get("status", "")).upper() == "SUCCESS":
+                                        if modify_resp.get("status") == "SUCCESS":
                                             st.success(f"Order {order['order_id']} modified successfully ✅")
                                             st.experimental_rerun()
                                         else:
