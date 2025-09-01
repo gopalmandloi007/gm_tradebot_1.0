@@ -87,17 +87,29 @@ else:
 
     # ---- Order form ----
     with st.form("place_order_form"):
-        st.subheader("Order Details")
-        order_type = st.radio("Order Type", ["BUY", "SELL"])
-        price_type = st.radio("Price Type", ["LIMIT", "MARKET", "SL-LIMIT", "SL-MARKET"])
-        product_type = st.selectbox("Product Type", ["NORMAL", "INTRADAY", "CNC"], index=2)
-        place_by = st.radio("Place by", ["Quantity", "Amount"])
-        quantity = st.number_input("Quantity", min_value=1, step=1, value=1)
-        amount = st.number_input("Amount", min_value=0.0, step=0.05, value=0.0)
-        trigger_price = st.number_input("Trigger Price (for SL orders)", min_value=0.0, step=0.05, value=0.0)
-        validity = st.selectbox("Validity", ["DAY", "IOC", "EOS"], index=0)
-        remarks = st.text_input("Remarks (optional)", "")
-        submitted = st.form_submit_button("🚀 Place Order")
+    st.subheader("Order Details")
+    
+    # Use columns for a compact layout
+    col1, col2, col3 = st.columns([1, 1, 1])
+    col4, col5 = st.columns([1, 1])
+
+    # Row 1
+    order_type = col1.radio("Order Type", ["BUY", "SELL"], label_visibility="collapsed")
+    price_type = col2.radio("Price Type", ["LIMIT", "MARKET", "SL-LIMIT", "SL-MARKET"], label_visibility="collapsed")
+    product_type = col3.selectbox("Product", ["NORMAL", "INTRADAY", "CNC"], index=2, label_visibility="collapsed")
+
+    # Row 2
+    place_by = col4.radio("Place by", ["Quantity", "Amount"], label_visibility="collapsed")
+    quantity = col4.number_input("Qty", min_value=1, step=1, value=1, label_visibility="collapsed")
+    amount = col5.number_input("Amt", min_value=0.0, step=0.05, value=0.0, label_visibility="collapsed")
+    
+    # Additional inputs in a single row or below
+    col6, col7, col8 = st.columns([1, 1, 1])
+    trigger_price = col6.number_input("Trigger Price", min_value=0.0, step=0.05, value=0.0)
+    validity = col7.selectbox("Validity", ["DAY", "IOC", "EOS"], index=0)
+    remarks = col8.text_input("Remarks", "")
+
+    submitted = st.form_submit_button("🚀 Place Order")
 
     # ---- Auto-refresh LTP ----
     if token:
