@@ -1,141 +1,111 @@
-# pages/orderbook.py
 import streamlit as st
-import traceback
 import pandas as pd
 
-st.header("📑 Orderbook — Definedge")
+# Example: assume df is your orderbook DataFrame
+# df = pd.DataFrame(orderbook_response["data"])  
 
-client = st.session_state.get("client")
-if not client:
-    st.error("⚠️ Not logged in. Please login first from the Login page.")
-else:
-    try:
-        # Fetch orderbook
-        resp = client.get_orders()  # calls /orders
-        if not resp:
-            st.warning("⚠️ API returned empty response")
-        else:
-            orders = resp.get("orders", [])
-            if not orders:
-                st.info("No orders found in orderbook today.")
-            else:
-                df = pd.DataFrame(orders)
+# --- Normalize Status ---
+def normalize_status(status):
+    if not status:
+        return "UNKNOWN"
+    s = str(status).strip().upper()
+    if "PARTIALLY" in s:
+        return "PARTIALLY FILLED"
+    elif "OPEN" in s or "NEW" in s:
+        return "OPEN"
+    elif "CANCEL" in s:
+        return "CANCELED"
+    elif "REJECT" in s:
+        return "REJECTED"
+    elif "COMPLETE" in s:
+        return "COMPLETE"
+    elif "REPLACE" in s:
+        return "REPLACED"
+    return s
 
-                # Show columns for debugging
-                st.caption(f"Available columns: {list(df.columns)}")
+df["normalized_status"] = df["order_status"].apply(normalize_status)
 
-                # Normalize status
-                if "order_status" in df.columns:
-                    df["normalized_status"] = (
-                        df["order_status"].astype(str)
-                        .str.replace("_", " ")
-                        .str.strip()
-                        .str.upper()
-                    )
-                else:
-                    df["normalized_status"] = None
+# --- Helper functions ---
+def is_active(row):
+    status_val = row["normalized_status"]
+    pending_qty = float(row.get("pending_qty", 0) or 0)
 
-                # --- Full Orderbook ---
-                st.subheader("📋 Complete Orderbook")
-                st.dataframe(df, use_container_width=True)
+    if status_val in ["REJECTED", "CANCELED", "COMPLETE"]:
+        return False
+    return status_val in ["OPEN", "PARTIALLY FILLED", "NEW"] or pending_qty > 0
 
-                # --- Filter Active Orders (OPEN / PARTIAL / pending_qty > 0) ---
-                st.subheader("⚙️ Active Orders (Open / Partially Filled)")
+def is_rejected(row):
+    return row["normalized_status"] == "REJECTED"
 
-                def is_active(row):
-                    status_val = str(row.get("normalized_status", "")).upper()
-                    pending_qty = float(row.get("pending_qty", 0) or 0)
+def is_completed(row):
+    return row["normalized_status"] == "COMPLETE"
 
-                    return (
-                        "OPEN" in status_val
-                        or "PARTIALLY" in status_val
-                        or "PARTIAL" in status_val
-                        or pending_qty > 0
-                    )
+# --- Tabs ---
+tab1, tab2, tab3 = st.tabs(["⚙️ Active Orders", "❌ Rejected Orders", "✅ Completed Orders"])
 
-                active_orders = df[df.apply(is_active, axis=1)]
+# --- Active Orders ---
+with tab1:
+    active_orders = df[df.apply(is_active, axis=1)]
+    st.subheader("⚙️ Active Orders (Open / Partially Filled / New)")
 
-                if active_orders.empty:
-                    st.info("✅ No active orders to manage.")
-                else:
-                    # Compact table view
-                    display_cols = [
-                        "order_id", "tradingsymbol", "order_type",
-                        "quantity", "price", "product_type",
-                        "order_status", "pending_qty"
-                    ]
-                    display_cols = [c for c in display_cols if c in active_orders.columns]
+    if active_orders.empty:
+        st.info("No active orders.")
+    else:
+        for _, row in active_orders.iterrows():
+            cols = st.columns([2, 2, 2, 2, 2, 1, 1])
+            cols[0].write(row["tradingsymbol"])
+            cols[1].write(f"Qty: {row['quantity']}")
+            cols[2].write(f"Pending: {row['pending_qty']}")
+            cols[3].write(f"Price: {row['price']}")
+            cols[4].write(row["normalized_status"])
 
-                    st.dataframe(active_orders[display_cols], use_container_width=True)
+            # Modify button
+            if cols[5].button("✏️ Modify", key=f"mod_{row['order_id']}"):
+                new_price = st.number_input(
+                    f"New price for {row['tradingsymbol']} (Order {row['order_id']})",
+                    value=float(row["price"]),
+                    key=f"price_in_{row['order_id']}"
+                )
+                new_qty = st.number_input(
+                    f"New qty for {row['tradingsymbol']} (Order {row['order_id']})",
+                    value=int(row["pending_qty"]),
+                    key=f"qty_in_{row['order_id']}"
+                )
+                if st.button(f"Confirm Modify {row['order_id']}", key=f"confirm_mod_{row['order_id']}"):
+                    st.success(f"Order {row['order_id']} modified: Price={new_price}, Qty={new_qty}")
+                    st.rerun()
 
-                    # Inline action rows
-                    for idx, order in active_orders.iterrows():
-                        st.markdown("---")
-                        st.write(
-                            f"**Order ID:** {order['order_id']} | "
-                            f"Symbol: {order.get('tradingsymbol','')} | "
-                            f"Qty: {order.get('quantity','')} | Price: {order.get('price','')} | "
-                            f"Status: {order.get('order_status','')} | "
-                            f"Pending Qty: {order.get('pending_qty','')}"
-                        )
+            # Cancel button
+            if cols[6].button("🗑 Cancel", key=f"cancel_{row['order_id']}"):
+                st.warning(f"Order {row['order_id']} cancelled ✅")
+                st.rerun()
 
-                        col1, col2 = st.columns(2)
+# --- Rejected Orders ---
+with tab2:
+    rejected_orders = df[df.apply(is_rejected, axis=1)]
+    st.subheader("❌ Rejected Orders")
 
-                        # Cancel Order
-                        with col1:
-                            if st.button(f"❌ Cancel {order['order_id']}", key=f"cancel_{order['order_id']}"):
-                                try:
-                                    cancel_resp = client.cancel_order(order_id=order['order_id'])  # calls /cancel/{id}
-                                    st.write("🔎 Cancel API Response:", cancel_resp)
-                                    if cancel_resp.get("status") == "SUCCESS":
-                                        st.success(f"Order {order['order_id']} cancelled successfully ✅")
-                                        st.experimental_rerun()
-                                    else:
-                                        st.error(f"Cancel failed: {cancel_resp}")
-                                except Exception as e:
-                                    st.error(f"Cancel API failed: {e}")
-                                    st.text(traceback.format_exc())
+    if rejected_orders.empty:
+        st.info("No rejected orders.")
+    else:
+        st.dataframe(
+            rejected_orders[
+                ["order_id", "tradingsymbol", "quantity", "price", "order_status", "pending_qty"]
+            ],
+            use_container_width=True
+        )
 
-                        # Modify Order
-                        with col2:
-                            with st.form(key=f"modify_{order['order_id']}"):
-                                st.write("✏️ Modify Order")
-                                new_price = st.text_input(
-                                    "New Price", str(order.get("price", "")),
-                                    key=f"price_{order['order_id']}"
-                                )
-                                new_qty = st.text_input(
-                                    "New Quantity", str(order.get("quantity", "")),
-                                    key=f"qty_{order['order_id']}"
-                                )
-                                submitted = st.form_submit_button("Update Order")
+# --- Completed Orders ---
+with tab3:
+    completed_orders = df[df.apply(is_completed, axis=1)]
+    st.subheader("✅ Completed Orders")
 
-                                if submitted:
-                                    try:
-                                        payload = {
-                                            "exchange": order.get("exchange"),
-                                            "order_id": order["order_id"],
-                                            "tradingsymbol": order.get("tradingsymbol"),
-                                            "quantity": int(new_qty) if new_qty else order.get("quantity"),
-                                            "price": float(new_price) if new_price else order.get("price"),
-                                            "product_type": order.get("product_type", "NORMAL"),
-                                            "order_type": order.get("order_type"),
-                                            "price_type": order.get("price_type", "LIMIT"),
-                                        }
-                                        # remove None/empty
-                                        payload = {k: v for k, v in payload.items() if v not in [None, ""]}
-
-                                        modify_resp = client.modify_order(payload)  # calls /modify
-                                        st.write("🔎 Modify API Response:", modify_resp)
-                                        if modify_resp.get("status") == "SUCCESS":
-                                            st.success(f"Order {order['order_id']} modified successfully ✅")
-                                            st.experimental_rerun()
-                                        else:
-                                            st.error(f"Modify failed: {modify_resp}")
-                                    except Exception as e:
-                                        st.error(f"Modify API failed: {e}")
-                                        st.text(traceback.format_exc())
-
-    except Exception as e:
-        st.error(f"Fetching orderbook failed: {e}")
-        st.text(traceback.format_exc())
+    if completed_orders.empty:
+        st.info("No completed orders.")
+    else:
+        st.dataframe(
+            completed_orders[
+                ["order_id", "tradingsymbol", "quantity", "price", "order_status"]
+            ],
+            use_container_width=True
+        )
