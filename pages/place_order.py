@@ -5,6 +5,7 @@ import io
 import zipfile
 import requests
 import time
+import os
 
 MASTER_URL = "https://app.definedgesecurities.com/public/allmaster.zip"
 MASTER_FILE = "data/master/allmaster.csv"
@@ -19,10 +20,9 @@ def download_and_extract_master():
             csv_name = z.namelist()[0]
             with z.open(csv_name) as f:
                 df = pd.read_csv(f, header=None)
-        df.columns = ["SEGMENT","TOKEN","SYMBOL","TRADINGSYM","INSTRUMENT","EXPIRY",
-                      "TICKSIZE","LOTSIZE","OPTIONTYPE","STRIKE","PRICEPREC","MULTIPLIER","ISIN","PRICEMULT","COMPANY"]
+        df.columns = ["SEGMENT", "TOKEN", "SYMBOL", "TRADINGSYM", "INSTRUMENT", "EXPIRY",
+                      "TICKSIZE", "LOTSIZE", "OPTIONTYPE", "STRIKE", "PRICEPREC", "MULTIPLIER", "ISIN", "PRICEMULT", "COMPANY"]
         # Save locally
-        import os
         os.makedirs("data/master", exist_ok=True)
         df.to_csv(MASTER_FILE, index=False)
         return df
@@ -46,7 +46,6 @@ def fetch_ltp(client, exchange, token):
         return 0.0
 
 # ---- Main code execution (no function wrapping) ----
-
 st.header("🛒 Place Order — Definedge")
 
 client = st.session_state.get("client")
@@ -87,66 +86,65 @@ else:
 
     # ---- Order form ----
     with st.form("place_order_form"):
-    st.subheader("Order Details")
-    
-    # Use columns for a compact layout
-    col1, col2, col3 = st.columns([1, 1, 1])
-    col4, col5 = st.columns([1, 1])
+        st.subheader("Order Details")
+        
+        # Use columns for a compact layout
+        col1, col2, col3 = st.columns([1, 1, 1])
+        col4, col5 = st.columns([1, 1])
 
-    # Row 1: Order Type, Price Type, Product
-    order_type = col1.radio("Order Type", ["BUY", "SELL"], label_visibility="collapsed")
-    price_type = col2.radio("Price Type", ["LIMIT", "MARKET", "SL-LIMIT", "SL-MARKET"], label_visibility="collapsed")
-    product_type = col3.selectbox("Product", ["NORMAL", "INTRADAY", "CNC"], index=2, label_visibility="collapsed")
+        # Row 1: Order Type, Price Type, Product
+        order_type = col1.radio("Order Type", ["BUY", "SELL"], label_visibility="collapsed")
+        price_type = col2.radio("Price Type", ["LIMIT", "MARKET", "SL-LIMIT", "SL-MARKET"], label_visibility="collapsed")
+        product_type = col3.selectbox("Product", ["NORMAL", "INTRADAY", "CNC"], index=2, label_visibility="collapsed")
 
-    # Row 2: Place by, Quantity, Amount
-    place_by = col4.radio("Place by", ["Quantity", "Amount"], label_visibility="collapsed")
-    quantity = col4.number_input("Qty", min_value=1, step=1, value=1, label_visibility="collapsed")
-    amount = col5.number_input("Amt", min_value=0.0, step=0.05, value=0.0, label_visibility="collapsed")
-    
-    # Row 3: Trigger Price, Validity, Remarks
-    col6, col7, col8 = st.columns([1, 1, 1])
-    trigger_price = col6.number_input("Trigger Price", min_value=0.0, step=0.05, value=0.0)
-    validity = col7.selectbox("Validity", ["DAY", "IOC", "EOS"], index=0)
-    remarks = col8.text_input("Remarks", "")
+        # Row 2: Place by, Quantity, Amount
+        place_by = col4.radio("Place by", ["Quantity", "Amount"], label_visibility="collapsed")
+        quantity = col4.number_input("Qty", min_value=1, step=1, value=1, label_visibility="collapsed")
+        amount = col5.number_input("Amt", min_value=0.0, step=0.05, value=0.0, label_visibility="collapsed")
+        
+        # Row 3: Trigger Price, Validity, Remarks
+        col6, col7, col8 = st.columns([1, 1, 1])
+        trigger_price = col6.number_input("Trigger Price", min_value=0.0, step=0.05, value=0.0)
+        validity = col7.selectbox("Validity", ["DAY", "IOC", "EOS"], index=0)
+        remarks = col8.text_input("Remarks", "")
 
-    submitted = st.form_submit_button("🚀 Place Order")
+        submitted = st.form_submit_button("🚀 Place Order")
 
-    # ---- Auto-refresh LTP ----
-    if token:
-        for i in range(1):  # only one refresh on page load, further can use while loop in async or callback
+        # ---- Auto-refresh LTP ----
+        if token:
             current_ltp = fetch_ltp(client, exchange, token)
             ltp_container.metric("📈 LTP", f"{current_ltp:.2f}")
-            time.sleep(1)  # adjust interval if needed
+            time.sleep(1)  # optional delay for refresh
 
-    # ---- Place order ----
-    if submitted:
-        # Determine quantity if placed by amount
-        if place_by == "Amount" and amount > 0 and initial_ltp > 0:
-            quantity = int(amount // initial_ltp)
+        # ---- Place order logic after submission ----
+        if submitted:
+            # Determine quantity if placed by amount
+            if place_by == "Amount" and amount > 0 and initial_ltp > 0:
+                quantity = int(amount // initial_ltp)
 
-        payload = {
-            "exchange": exchange,
-            "tradingsymbol": selected_symbol,
-            "order_type": order_type,
-            "price": str(price_input),
-            "price_type": price_type,
-            "product_type": product_type,
-            "quantity": str(quantity),
-            "validity": validity,
-        }
-        if trigger_price > 0:
-            payload["trigger_price"] = str(trigger_price)
-        if remarks:
-            payload["remarks"] = remarks
+            payload = {
+                "exchange": exchange,
+                "tradingsymbol": selected_symbol,
+                "order_type": order_type,
+                "price": str(price_input),
+                "price_type": price_type,
+                "product_type": product_type,
+                "quantity": str(quantity),
+                "validity": validity,
+            }
+            if trigger_price > 0:
+                payload["trigger_price"] = str(trigger_price)
+            if remarks:
+                payload["remarks"] = remarks
 
-        st.write("📦 Sending payload:")
-        st.json(payload)
+            st.write("📦 Sending payload:")
+            st.json(payload)
 
-        resp = client.place_order(payload)
-        st.write("📬 API Response:")
-        st.json(resp)
+            resp = client.place_order(payload)
+            st.write("📬 API Response:")
+            st.json(resp)
 
-        if resp.get("status") == "SUCCESS":
-            st.success(f"✅ Order placed successfully. Order ID: {resp.get('order_id')}")
-        else:
-            st.error(f"❌ Order placement failed. Response: {resp}")
+            if resp.get("status") == "SUCCESS":
+                st.success(f"✅ Order placed successfully. Order ID: {resp.get('order_id')}")
+            else:
+                st.error(f"❌ Order placement failed. Response: {resp}")
