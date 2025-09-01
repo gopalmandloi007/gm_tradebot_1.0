@@ -26,9 +26,13 @@ def show():
         # ---- Flatten all fields (Only NSE) ----
         records = []
         for h in raw_data:
+            # Extract common fields excluding 'tradingsymbol'
             base = {k: v for k, v in h.items() if k != "tradingsymbol"}
+
+            # Loop through 'tradingsymbol' list
             for ts in h.get("tradingsymbol", []):
-                if ts.get("exchange") == "NSE":   # ✅ Only NSE
+                if ts.get("exchange") == "NSE":  # ✅ Only NSE
+                    # Combine base fields with tradingsymbol fields
                     row = {**base, **ts}
                     records.append(row)
 
@@ -37,10 +41,9 @@ def show():
         if records:
             df = pd.DataFrame(records)
 
-            # ✅ अब full table दिखेगा (कोई slicing नहीं)
+            # Show the full table without slicing
             st.success(f"✅ NSE Holdings found: {len(df)}")
             st.dataframe(df, use_container_width=True)
-
         else:
             st.warning("⚠️ No NSE holdings found")
 
