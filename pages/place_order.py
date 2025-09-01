@@ -107,7 +107,7 @@ col_refresh, col_manual = st.columns([1, 1])
 with col_refresh:
     if st.button("🔄 Refresh Master (redownload)"):
         master_df = download_and_extract_master()
-        st.experimental_rerun()
+        st.rerun()
 with col_manual:
     manual_mode = st.checkbox("Manual symbol input (no master)")
 
@@ -291,7 +291,7 @@ if '_pending_place_order' in st.session_state:
             if isinstance(resp, dict) and resp.get('status') == 'SUCCESS':
                 st.success(f"✅ Order placed successfully. Order ID: {resp.get('order_id')}")
                 del st.session_state['_pending_place_order']
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error(f"❌ Placement failed: {resp}")
         except Exception as e:
