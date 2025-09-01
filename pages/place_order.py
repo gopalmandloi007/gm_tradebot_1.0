@@ -1,143 +1,152 @@
+# pages/place_order.py
 import streamlit as st
 import pandas as pd
+import io
+import zipfile
 import requests
 import time
+import os
 
-# Initialize your API client here
-# Make sure you replace this with your actual client
-class YourAPIClient:
-    def get_quotes(self, exchange, token):
-        # Replace with actual API call
-        # Example:
-        # response = requests.get(f"https://api.example.com/quotes?exchange={exchange}&token={token}")
-        # return response.json()
-        return {"ltp": 2217.80}  # Dummy data
+MASTER_URL = "https://app.definedgesecurities.com/public/allmaster.zip"
+MASTER_FILE = "data/master/allmaster.csv"
 
-    def api_get(self, endpoint):
-        # Replace with actual API call
-        # Example:
-        # response = requests.get(f"https://api.example.com/{endpoint}")
-        # return response.json()
-        return {"cash": 1226663.61}  # Dummy data
+# ---- Load or update master file ----
+def download_and_extract_master():
+    try:
+        r = requests.get(MASTER_URL)
+        r.raise_for_status()
+        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+            csv_name = z.namelist()[0]
+            with z.open(csv_name) as f:
+                df = pd.read_csv(f, header=None)
+        df.columns = ["SEGMENT","TOKEN","SYMBOL","TRADINGSYM","INSTRUMENT","EXPIRY",
+                      "TICKSIZE","LOTSIZE","OPTIONTYPE","STRIKE","PRICEPREC","MULTIPLIER","ISIN","PRICEMULT","COMPANY"]
+        os.makedirs("data/master", exist_ok=True)
+        df.to_csv(MASTER_FILE, index=False)
+        return df
+    except Exception as e:
+        st.error(f"Failed to download master file: {e}")
+        return pd.DataFrame()
 
-    def place_order(self, payload):
-        # Replace with your API call to place order
-        # response = requests.post("https://api.example.com/place_order", json=payload)
-        # return response.json()
-        return {"status": "SUCCESS", "order_id": "ORD123456"}
+def load_master_symbols():
+    try:
+        df = pd.read_csv(MASTER_FILE)
+        return df
+    except:
+        return download_and_extract_master()
 
-# Instantiate your client
-client = YourAPIClient()
+# ---- Fetch LTP ----
+def fetch_ltp(client, exchange, token):
+    try:
+        quotes = client.get_quotes(exchange, str(token))
+        return float(quotes.get("ltp", 0.0))
+    except:
+        return 0.0
 
-st.title("🛒 Place Order — Definedge")
+st.header("🛒 Place Order — Definedge")
 
-# --- Fetch account info ---
-limits = client.api_get("/limits")
-cash_available = float(limits.get("cash", 0.0))
+client = st.session_state.get("client")
+if not client:
+    st.error("⚠️ Not logged in. Please login first from Login page.")
+else:
+    df_symbols = load_master_symbols()
 
-# --- Exchange selection ---
-exchange = st.radio("Exchange", ["NSE", "BSE", "NFO", "MCX"], index=0, horizontal=True)
+    # --- Exchange selection ---
+    exchange = st.radio("Exchange", ["NSE", "BSE", "NFO", "MCX"], index=0, horizontal=True)
 
-# --- Fetch symbols list ---
-# Ideally, load from your master data. Here, hardcoded for demo.
-symbols_list = ["ZYDUSWELL-EQ"]
-selected_symbol = st.selectbox("Trading Symbol", symbols_list)
+    # Filter master for selected exchange
+    df_exch = df_symbols[df_symbols["SEGMENT"] == exchange]
 
-# --- Get token for selected symbol ---
-# In real scenario, load symbol data from your master CSV
-# For demo, just assign a dummy token
-token = 123456  # Replace with actual token lookup
+    # --- Trading Symbol selection ---
+    selected_symbol = st.selectbox(
+        "Trading Symbol",
+        df_exch["TRADINGSYM"].tolist()
+    )
 
-# --- Fetch real-time LTP ---
-def fetch_ltp():
-    data = client.get_quotes(exchange, token)
-    return float(data.get("ltp", 0.0))
+    # --- Fetch token ---
+    token_row = df_exch[df_exch["TRADINGSYM"] == selected_symbol]
+    token = int(token_row["TOKEN"].values[0]) if not token_row.empty else None
 
-# Fetch current LTP
-current_ltp = fetch_ltp()
+    # --- Fetch user limits ---
+    limits = client.api_get("/limits")
+    cash_available = float(limits.get("cash", 0.0))
 
-# --- Display info in compact row ---
-col1, col2, col3 = st.columns([2, 1, 2])
-with col1:
-    st.markdown("**Trading Symbol**")
-    st.write(selected_symbol)
-with col2:
-    st.markdown("**📈 LTP**")
-    st.metric("", f"{current_ltp:.2f}")
-with col3:
-    st.markdown("**💰 Cash Available**")
-    st.metric("", f"₹{cash_available:,.2f}")
+    # --- Fetch current LTP ---
+    current_ltp = fetch_ltp(client, exchange, token) if token else 0.0
+    price_input = st.number_input("Price", min_value=0.0, step=0.05, value=current_ltp)
 
-# --- Order form ---
-with st.form("order_form", clear_on_submit=False):
-    st.subheader("Order Details")
-
-    # Row 1: Order Type & Price Type
-    col1, col2 = st.columns(2)
+    # --- Top info display: Trading Symbol, LTP, Cash ---
+    col1, col2, col3 = st.columns(3)
     with col1:
+        st.markdown("**Trading Symbol**")
+        st.text(selected_symbol)
+    with col2:
+        st.markdown("**📈 LTP**")
+        st.metric(label="", value=f"{current_ltp:.2f}")
+    with col3:
+        st.markdown("**💰 Cash Available:**")
+        st.metric(label="", value=f"₹{cash_available:,.2f}")
+
+    # --- Order form ---
+    with st.form("place_order_form"):
+        st.subheader("Order Details")
         order_type = st.radio("Order Type", ["BUY", "SELL"], index=0, horizontal=True)
-    with col2:
         price_type = st.radio("Price Type", ["LIMIT", "MARKET", "SL-LIMIT", "SL-MARKET"], index=0, horizontal=True)
+        place_by = st.radio("Place by", ["Quantity", "Amount"], index=0, horizontal=True)
 
-    # Row 2: Quantity & Amount
-    col1, col2 = st.columns(2)
-    with col1:
-        quantity = st.number_input("Qty", min_value=1, step=1, value=1)
-    with col2:
-        amount = st.number_input("Amt", min_value=0.0, step=0.05, value=0.0)
+        col_qty, col_amt = st.columns(2)
+        with col_qty:
+            quantity = st.number_input("Quantity", min_value=1, step=1, value=1)
+        with col_amt:
+            amount = st.number_input("Amount", min_value=0.0, step=0.05, value=0.0)
+        trigger_price = st.number_input("Trigger Price (for SL orders)", min_value=0.0, step=0.05, value=0.0)
 
-    # Row 3: Price & Trigger Price
-    col1, col2 = st.columns(2)
-    with col1:
-        price = st.number_input("Price", min_value=0.0, step=0.05, value=current_ltp)
-    with col2:
-        trigger_price = st.number_input("Trigger Price", min_value=0.0, step=0.05, value=0.0)
+        col_prod, col_valid = st.columns(2)
+        with col_prod:
+            product_type = st.selectbox("Product Type", ["NORMAL", "INTRADAY", "CNC"], index=2)
+        with col_valid:
+            validity = st.selectbox("Validity", ["DAY", "IOC", "EOS"], index=0)
 
-    # Row 4: Product & Validity
-    col1, col2 = st.columns(2)
-    with col1:
-        product_type = st.selectbox("Product", ["NORMAL", "INTRADAY", "CNC"], index=2)
-    with col2:
-        validity = st.selectbox("Validity", ["DAY", "IOC", "EOS"], index=0)
+        remarks = st.text_input("Remarks (optional)", "")
 
-    # Remarks
-    remarks = st.text_input("Remarks", "")
+        submitted = st.form_submit_button("🚀 Place Order")
 
-    # Submit button
-    submitted = st.form_submit_button("🚀 Place Order")
+    # --- Auto-refresh LTP ---
+    if token:
+        current_ltp = fetch_ltp(client, exchange, token)
+        st.metric("📈 LTP", f"{current_ltp:.2f}")
+        time.sleep(1)
 
-# --- Handle order submission ---
-if submitted:
-    # Calculate quantity if placed by amount
-    final_qty = quantity
-    if amount > 0 and current_ltp > 0:
-        final_qty = max(1, int(amount // current_ltp))
-    payload = {
-        "exchange": exchange,
-        "tradingsymbol": selected_symbol,
-        "order_type": order_type,
-        "price": str(price),
-        "price_type": price_type,
-        "product_type": product_type,
-        "quantity": str(final_qty),
-        "validity": validity,
-    }
-    if trigger_price > 0:
-        payload["trigger_price"] = str(trigger_price)
-    if remarks:
-        payload["remarks"] = remarks
+    # --- Handle order placement ---
+    if submitted:
+        # Calculate quantity if placed by amount
+        if place_by == "Amount" and amount > 0 and current_ltp > 0:
+            quantity = max(1, int(amount // current_ltp))
+        else:
+            quantity = max(1, int(quantity))
+        payload = {
+            "exchange": exchange,
+            "tradingsymbol": selected_symbol,
+            "order_type": order_type,
+            "price": str(price_input),
+            "price_type": price_type,
+            "product_type": product_type,
+            "quantity": str(quantity),
+            "validity": validity,
+        }
+        if trigger_price > 0:
+            payload["trigger_price"] = str(trigger_price)
+        if remarks:
+            payload["remarks"] = remarks
 
-    # Call your API to place order
-    response = client.place_order(payload)
+        st.write("📦 Sending payload:")
+        st.json(payload)
 
-    # Show response
-    if response.get("status") == "SUCCESS":
-        st.success(f"✅ Order placed successfully. ID: {response.get('order_id')}")
-    else:
-        st.error(f"❌ Order placement failed. Response: {response}")
+        resp = client.place_order(payload)
+        st.write("📬 API Response:")
+        st.json(resp)
 
-# Optional: Refresh LTP automatically every few seconds
-# (You can uncomment this if you want auto-refresh)
-# if st.button("Refresh LTP"):
-#     current_ltp = fetch_ltp()
-#     st.experimental_rerun()
+        if resp.get("status") == "SUCCESS":
+            st.success(f"✅ Order placed successfully. Order ID: {resp.get('order_id')}")
+        else:
+            st.error(f"❌ Order placement failed. Response: {resp}")
