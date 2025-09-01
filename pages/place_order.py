@@ -88,20 +88,19 @@ else:
     # ---- Order form ----
     with st.form("place_order_form"):
         st.subheader("Order Details")
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            quantity = st.number_input("Quantity", min_value=1, step=1, value=1)
-
-        with col2:
-            amount = st.number_input("Amount", min_value=0.0, step=0.05, value=0.0)
-
-        with col2:
-            product_type = st.selectbox("Product Type", ["NORMAL", "INTRADAY", "CNC"], index=2)
-            
+                    
         order_type = st.radio("Order Type", ["BUY", "SELL"], index=0, horizontal=True)
         price_type = st.radio("Price Type", ["LIMIT", "MARKET", "SL-LIMIT", "SL-MARKET"], index=0, horizontal=True)
         place_by = st.radio("Place by", ["Quantity", "Amount"], index=0, horizontal=True)
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            quantity = st.number_input("Quantity", min_value=1, step=1, value=1)
+        with col2:
+            amount = st.number_input("Amount", min_value=0.0, step=0.05, value=0.0)
+        with col2:
+            product_type = st.selectbox("Product Type", ["NORMAL", "INTRADAY", "CNC"], index=2)
+        
         trigger_price = st.number_input("Trigger Price (for SL orders)", min_value=0.0, step=0.05, value=0.0)
         validity = st.selectbox("Validity", ["DAY", "IOC", "EOS"], index=0)
         remarks = st.text_input("Remarks (optional)", "")
