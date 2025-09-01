@@ -88,6 +88,12 @@ else:
                                         st.write("✏️ Modify Order")
                                         new_price = st.text_input("New Price", str(order.get("price", "")), key=f"price_{order['order_id']}")
                                         new_qty = st.text_input("New Quantity", str(order.get("quantity", "")), key=f"qty_{order['order_id']}")
+
+                                        # ✅ Add trigger_price input only for SL orders
+                                        new_trigger = None
+                                        if order.get("price_type") in ["SL-LIMIT", "SL-MARKET"]:
+                                            new_trigger = st.text_input("New Trigger Price", str(order.get("trigger_price", "")), key=f"trigger_{order['order_id']}")
+
                                         submitted = st.form_submit_button("Update Order")
 
                                         if submitted:
@@ -102,6 +108,9 @@ else:
                                                     "order_type": order.get("order_type"),
                                                     "price_type": order.get("price_type", "LIMIT"),
                                                 }
+                                                if new_trigger:  # include only if given
+                                                    payload["trigger_price"] = float(new_trigger)
+
                                                 payload = {k: v for k, v in payload.items() if v not in [None, ""]}
 
                                                 modify_resp = client.modify_order(payload)
@@ -125,6 +134,7 @@ else:
                     action = st.radio("Select Action", ["Cancel", "Modify"])
                     new_price = st.text_input("New Price (for Modify)", "")
                     new_qty = st.text_input("New Quantity (for Modify)", "")
+                    manual_trigger = st.text_input("Trigger Price (only for SL orders)", "")
                     submitted = st.form_submit_button("Submit")
 
                     if submitted and manual_order_id:
@@ -156,6 +166,9 @@ else:
                                     "order_type": order_data.get("order_type", st.selectbox("Order Type", ["BUY", "SELL"])),
                                     "price_type": order_data.get("price_type", st.selectbox("Price Type", ["LIMIT", "MARKET", "SL-LIMIT", "SL-MARKET"])),
                                 }
+                                if manual_trigger:
+                                    payload["trigger_price"] = float(manual_trigger)
+
                                 payload = {k: v for k, v in payload.items() if v not in [None, ""]}
 
                                 modify_resp = client.modify_order(payload)
