@@ -85,7 +85,7 @@ else:
                                             st.write("🔎 Cancel API Response:", cancel_resp)
                                             if cancel_resp.get("status") == "SUCCESS":
                                                 st.success(f"Order {order['order_id']} cancelled successfully ✅")
-                                                st.experimental_rerun()
+                                                st.rerun()
                                             else:
                                                 st.error(f"Cancel failed: {cancel_resp}")
                                         except Exception as e:
@@ -125,7 +125,7 @@ else:
                                                 st.write("🔎 Modify API Response:", modify_resp)
                                                 if modify_resp.get("status") == "SUCCESS":
                                                     st.success(f"Order {order['order_id']} modified successfully ✅")
-                                                    st.experimental_rerun()
+                                                    st.rerun()
                                                 else:
                                                     st.error(f"Modify failed: {modify_resp}")
                                             except Exception as e:
