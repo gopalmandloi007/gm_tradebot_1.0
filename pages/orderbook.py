@@ -11,7 +11,7 @@ if not client:
 else:
     if st.button("🔄 Fetch Orderbook"):
         try:
-            resp = client.get_orders()   # calls /orders
+            resp = client.get_orders()  # calls /orders
             if not resp:
                 st.warning("⚠️ API returned empty response")
             else:
@@ -49,25 +49,27 @@ else:
 
                                 col1, col2 = st.columns(2)
 
-                                # Unique keys for buttons/forms
-                                cancel_button_key = f"cancel_{order['order_id']}"
-                                form_key = f"modify_form_{order['order_id']}"
+                                # Generate unique keys for buttons/forms
+                                cancel_key = f"cancel_{order['order_id']}"
+                                form_key = f"modify_{order['order_id']}"
 
                                 # Cancel Button
                                 with col1:
-                                    if st.button(f"❌ Cancel {order['order_id']}", key=cancel_button_key):
+                                    if st.button(f"❌ Cancel {order['order_id']}", key=cancel_key):
                                         try:
                                             cancel_resp = client.cancel_order(order_id=order['order_id'])
                                             st.write("🔎 Cancel API Response:", cancel_resp)
                                             if cancel_resp.get("status") == "SUCCESS":
                                                 st.success(f"Order {order['order_id']} cancelled successfully ✅")
+                                                # After cancel, refresh the orderbook
+                                                st.experimental_rerun()
                                             else:
                                                 st.error(f"Cancel failed: {cancel_resp}")
                                         except Exception as e:
                                             st.error(f"Cancel API failed: {e}")
                                             st.text(traceback.format_exc())
 
-                                # Modify Form
+                                # Modify Order Form
                                 with col2:
                                     with st.form(form_key):
                                         st.write("✏️ Modify Order")
@@ -87,12 +89,14 @@ else:
                                                     "product_type": order.get("product_type", "NORMAL"),
                                                     "price_type": order.get("price_type", "LIMIT"),
                                                 }
-                                                # Remove None values if any
+                                                # Remove None values
                                                 payload = {k: v for k, v in payload.items() if v is not None}
                                                 modify_resp = client.modify_order(payload)
                                                 st.write("🔎 Modify API Response:", modify_resp)
                                                 if modify_resp.get("status") == "SUCCESS":
                                                     st.success(f"Order {order['order_id']} modified successfully ✅")
+                                                    # Refresh the orderbook after modification
+                                                    st.experimental_rerun()
                                                 else:
                                                     st.error(f"Modify failed: {modify_resp}")
                                             except Exception as e:
