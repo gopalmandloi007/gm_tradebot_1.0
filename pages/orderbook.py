@@ -10,7 +10,7 @@ if not client:
     st.error("⚠️ Not logged in. Please login first from the Login page.")
 else:
     try:
-        # Directly fetch orderbook on page load
+        # Fetch orderbook immediately
         resp = client.get_orders()  # calls /orders
         if not resp:
             st.warning("⚠️ API returned empty response")
@@ -21,17 +21,17 @@ else:
             else:
                 df = pd.DataFrame(orders)
 
-                # Show raw columns for debugging
+                # Show columns for debugging
                 st.caption(f"Available columns: {list(df.columns)}")
 
-                # Detect possible status column
+                # Detect status column
                 status_col = None
                 for col in ["status", "order_status"]:
                     if col in df.columns:
                         status_col = col
                         break
 
-                # Add normalized_status column
+                # Normalize status if present
                 if status_col:
                     df["normalized_status"] = (
                         df[status_col].astype(str)
@@ -42,36 +42,40 @@ else:
                 else:
                     df["normalized_status"] = None
 
-                # --- Full Orderbook (compact table) ---
+                # --- Full Orderbook ---
                 st.subheader("📋 Complete Orderbook")
                 st.dataframe(df, use_container_width=True)
 
-                # --- Manage Open / Partially Filled Orders ---
-                st.subheader("⚙️ Manage Open / Partially Filled Orders")
+                # --- Filter Active Orders (OPEN / PARTIAL / pending_qty > 0) ---
+                st.subheader("⚙️ Active Orders (Open / Partially Filled)")
 
-                if status_col:
-                    # Define accepted labels
-                    open_labels = ["OPEN"]
-                    partial_labels = [
-                        "PARTIALLY FILLED", "PARTIALLYFILLED", "PARTIALLY FULFILLED"
-                    ]
+                def is_active(row):
+                    status_val = str(row.get("normalized_status", "")).upper()
+                    pending_qty = float(row.get("pending_qty", 0) or 0)
 
-                    open_orders = df[
-                        (df["normalized_status"].isin(open_labels + partial_labels))
-                        | (("pending_qty" in df.columns) & (df["pending_qty"].astype(float) > 0))
-                    ]
-                elif "pending_qty" in df.columns:
-                    open_orders = df[df["pending_qty"].astype(float) > 0]
+                    return (
+                        "OPEN" in status_val
+                        or "PARTIALLY" in status_val
+                        or pending_qty > 0
+                    )
+
+                active_orders = df[df.apply(is_active, axis=1)]
+
+                if active_orders.empty:
+                    st.info("✅ No active orders to manage.")
                 else:
-                    open_orders = pd.DataFrame()
+                    # Compact table view
+                    display_cols = [
+                        "order_id", "tradingsymbol", "order_type",
+                        "quantity", "price", "product_type",
+                        status_col if status_col else "pending_qty"
+                    ]
+                    display_cols = [c for c in display_cols if c in active_orders.columns]
 
-                if open_orders.empty:
-                    st.info("✅ No OPEN or PARTIALLY FILLED orders to manage.")
-                else:
-                    st.dataframe(open_orders, use_container_width=True)
+                    st.dataframe(active_orders[display_cols], use_container_width=True)
 
-                    # Actions for each order
-                    for idx, order in open_orders.iterrows():
+                    # Inline action rows
+                    for idx, order in active_orders.iterrows():
                         st.markdown("---")
                         st.write(
                             f"**Order ID:** {order['order_id']} | "
@@ -83,14 +87,11 @@ else:
 
                         col1, col2 = st.columns(2)
 
-                        cancel_key = f"cancel_{order['order_id']}"
-                        form_key = f"modify_{order['order_id']}"
-
-                        # Cancel Button
+                        # Cancel Order
                         with col1:
-                            if st.button(f"❌ Cancel {order['order_id']}", key=cancel_key):
+                            if st.button(f"❌ Cancel {order['order_id']}", key=f"cancel_{order['order_id']}"):
                                 try:
-                                    cancel_resp = client.cancel_order(order_id=order['order_id'])
+                                    cancel_resp = client.cancel_order(order_id=order['order_id'])  # calls /cancel/{id}
                                     st.write("🔎 Cancel API Response:", cancel_resp)
                                     if cancel_resp.get("status") == "SUCCESS":
                                         st.success(f"Order {order['order_id']} cancelled successfully ✅")
@@ -101,9 +102,9 @@ else:
                                     st.error(f"Cancel API failed: {e}")
                                     st.text(traceback.format_exc())
 
-                        # Modify Order Form
+                        # Modify Order
                         with col2:
-                            with st.form(form_key):
+                            with st.form(key=f"modify_{order['order_id']}"):
                                 st.write("✏️ Modify Order")
                                 new_price = st.text_input(
                                     "New Price", str(order.get("price", "")),
@@ -118,17 +119,19 @@ else:
                                 if submitted:
                                     try:
                                         payload = {
-                                            "order_id": order['order_id'],
                                             "exchange": order.get("exchange"),
+                                            "order_id": order["order_id"],
                                             "tradingsymbol": order.get("tradingsymbol"),
-                                            "order_type": order.get("order_type"),
-                                            "price": float(new_price) if new_price else None,
-                                            "quantity": int(new_qty) if new_qty else None,
+                                            "quantity": int(new_qty) if new_qty else order.get("quantity"),
+                                            "price": float(new_price) if new_price else order.get("price"),
                                             "product_type": order.get("product_type", "NORMAL"),
+                                            "order_type": order.get("order_type"),
                                             "price_type": order.get("price_type", "LIMIT"),
                                         }
-                                        payload = {k: v for k, v in payload.items() if v is not None}
-                                        modify_resp = client.modify_order(payload)
+                                        # remove None/empty
+                                        payload = {k: v for k, v in payload.items() if v not in [None, ""]}
+
+                                        modify_resp = client.modify_order(payload)  # calls /modify
                                         st.write("🔎 Modify API Response:", modify_resp)
                                         if modify_resp.get("status") == "SUCCESS":
                                             st.success(f"Order {order['order_id']} modified successfully ✅")
