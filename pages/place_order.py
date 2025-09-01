@@ -56,7 +56,7 @@ else:
     df_symbols = load_master_symbols()
 
     # ---- Exchange selection ----
-    exchange = st.radio("Exchange", ["NSE", "BSE", "NFO", "MCX"], index=0, horizontal=True)
+    exchange = st.radio("Exchange", ["NSE", "BSE", "NFO", "MCX"], index=0)
 
     # Filter master for selected exchange
     df_exch = df_symbols[df_symbols["SEGMENT"] == exchange]
@@ -89,7 +89,7 @@ else:
     with st.form("place_order_form"):
         st.subheader("Order Details")
         order_type = st.radio("Order Type", ["BUY", "SELL"])
-        price_type = st.radio("Price Type", ["LIMIT", "MARKET", "SL-LIMIT", "SL-MARKET"])
+        price_type = st.radio("Price Type", ["LIMIT", "MARKET", "SL-LIMIT", "SL-MARKET"], index=0)
         product_type = st.selectbox("Product Type", ["NORMAL", "INTRADAY", "CNC"], index=2)
         place_by = st.radio("Place by", ["Quantity", "Amount"])
         quantity = st.number_input("Quantity", min_value=1, step=1, value=1)
