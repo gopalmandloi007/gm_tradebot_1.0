@@ -54,18 +54,22 @@ if not client:
     st.error("⚠️ Not logged in. Please login first from Login page.")
 else:
     df_symbols = load_master_symbols()
+    # TOP WINDOW
+    col1, col2, col3 = st.columns(3)
 
+    with col1:
     # ---- Exchange selection ----
-    exchange = st.radio("Exchange", ["NSE", "BSE", "NFO", "MCX"], index=0, horizontal=True)
+        exchange = st.radio("Exchange", ["NSE", "BSE", "NFO", "MCX"], index=0, horizontal=True)
 
     # Filter master for selected exchange
     df_exch = df_symbols[df_symbols["SEGMENT"] == exchange]
 
+    with col2:
     # ---- Trading Symbol selection ----
-    selected_symbol = st.selectbox(
-        "Trading Symbol",
-        df_exch["TRADINGSYM"].tolist()
-    )
+        selected_symbol = st.selectbox(
+            "Trading Symbol",
+            df_exch["TRADINGSYM"].tolist()
+        )
 
     # Get token for LTP
     token_row = df_exch[df_exch["TRADINGSYM"] == selected_symbol]
@@ -75,10 +79,11 @@ else:
     initial_ltp = fetch_ltp(client, exchange, token) if token else 0.0
     price_input = st.number_input("Price", min_value=0.0, step=0.05, value=initial_ltp)
 
+    with col3:
     # ---- LTP display container (auto-refresh) ----
-    ltp_container = st.empty()
-    cash_container = st.empty()
-    margin_container = st.empty()
+        ltp_container = st.empty()
+        cash_container = st.empty()
+        margin_container = st.empty()
 
     # ---- Fetch user limits ----
     limits = client.api_get("/limits")
