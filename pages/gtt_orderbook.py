@@ -1,6 +1,3 @@
-Certainly! Here's the code with the `show()` function removed, and the logic now runs directly at the top level:
-
-```python
 # pages/gtt_orderbook.py
 import streamlit as st
 import pandas as pd
@@ -111,17 +108,3 @@ try:
 except Exception as e:
     st.error(f"⚠️ GTT order fetch failed: {e}")
     st.text(traceback.format_exc())
-```
-
-### Summary:
-- Removed the `def show():` wrapper.
-- The code now runs immediately when the script is loaded.
-- Ensured that `st.header()` and subsequent code are at the top indentation level.
-- Preserved the logic and flow.
-
----
-
-**Note:**  
-If you want to control this code's execution, you might add specific conditions or buttons in your app, but removing the function wrapper means it executes on page load.
-
-Let me know if you'd like further customization!
