@@ -36,11 +36,12 @@ else:
                     df["normalized_status"] = (
                         df[status_col].astype(str)
                         .str.replace("_", " ")
+                        .str.replace("-", " ")
                         .str.strip()
                         .str.upper()
                     )
                 else:
-                    df["normalized_status"] = None
+                    df["normalized_status"] = ""
 
                 # --- Full Orderbook ---
                 st.subheader("📋 Complete Orderbook")
@@ -55,7 +56,8 @@ else:
 
                     return (
                         "OPEN" in status_val
-                        or "PARTIALLY" in status_val
+                        or "PARTIAL" in status_val  # catches PARTIALLY FILLED, PARTIAL, etc.
+                        or "PENDING" in status_val
                         or pending_qty > 0
                     )
 
@@ -93,7 +95,7 @@ else:
                                 try:
                                     cancel_resp = client.cancel_order(order_id=order['order_id'])  # calls /cancel/{id}
                                     st.write("🔎 Cancel API Response:", cancel_resp)
-                                    if cancel_resp.get("status") == "SUCCESS":
+                                    if str(cancel_resp.get("status", "")).upper() == "SUCCESS":
                                         st.success(f"Order {order['order_id']} cancelled successfully ✅")
                                         st.experimental_rerun()
                                     else:
@@ -133,7 +135,7 @@ else:
 
                                         modify_resp = client.modify_order(payload)  # calls /modify
                                         st.write("🔎 Modify API Response:", modify_resp)
-                                        if modify_resp.get("status") == "SUCCESS":
+                                        if str(modify_resp.get("status", "")).upper() == "SUCCESS":
                                             st.success(f"Order {order['order_id']} modified successfully ✅")
                                             st.experimental_rerun()
                                         else:
