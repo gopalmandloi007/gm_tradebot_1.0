@@ -3,8 +3,6 @@ import streamlit as st
 import traceback
 import pandas as pd
 
-# Remove the show() function; execute code directly
-
 st.header("📑 Orderbook — Definedge (Manage by Symbol)")
 
 client = st.session_state.get("client")
@@ -51,9 +49,13 @@ else:
 
                                 col1, col2 = st.columns(2)
 
+                                # Unique keys for buttons/forms
+                                cancel_button_key = f"cancel_{order['order_id']}"
+                                form_key = f"modify_form_{order['order_id']}"
+
                                 # Cancel Button
                                 with col1:
-                                    if st.button(f"❌ Cancel {order['order_id']}"):
+                                    if st.button(f"❌ Cancel {order['order_id']}", key=cancel_button_key):
                                         try:
                                             cancel_resp = client.cancel_order(order_id=order['order_id'])
                                             st.write("🔎 Cancel API Response:", cancel_resp)
@@ -67,7 +69,7 @@ else:
 
                                 # Modify Form
                                 with col2:
-                                    with st.form(f"modify_form_{order['order_id']}"):
+                                    with st.form(form_key):
                                         st.write("✏️ Modify Order")
                                         new_price = st.text_input("New Price", str(order.get("price", "")), key=f"price_{order['order_id']}")
                                         new_qty = st.text_input("New Quantity", str(order.get("quantity", "")), key=f"qty_{order['order_id']}")
@@ -85,6 +87,8 @@ else:
                                                     "product_type": order.get("product_type", "NORMAL"),
                                                     "price_type": order.get("price_type", "LIMIT"),
                                                 }
+                                                # Remove None values if any
+                                                payload = {k: v for k, v in payload.items() if v is not None}
                                                 modify_resp = client.modify_order(payload)
                                                 st.write("🔎 Modify API Response:", modify_resp)
                                                 if modify_resp.get("status") == "SUCCESS":
