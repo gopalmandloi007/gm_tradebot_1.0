@@ -56,20 +56,23 @@ else:
     df_symbols = load_master_symbols()
     # TOP WINDOW
     col1, col2, col3 = st.columns(3)
-
-    with col1:
     # ---- Exchange selection ----
-        exchange = st.radio("Exchange", ["NSE", "BSE", "NFO", "MCX"], index=0, horizontal=True)
-
-    # Filter master for selected exchange
-    df_exch = df_symbols[df_symbols["SEGMENT"] == exchange]
-
-    with col2:
+    exchange = st.radio("Exchange", ["NSE", "BSE", "NFO", "MCX"], index=0, horizontal=True)
+    with col1:
     # ---- Trading Symbol selection ----
         selected_symbol = st.selectbox(
             "Trading Symbol",
             df_exch["TRADINGSYM"].tolist()
         )
+
+    # Filter master for selected exchange
+    df_exch = df_symbols[df_symbols["SEGMENT"] == exchange]
+
+    with col2:
+    # ---- LTP display container (auto-refresh) ----
+        ltp_container = st.empty()
+        cash_container = st.empty()
+        margin_container = st.empty()
 
     # Get token for LTP
     token_row = df_exch[df_exch["TRADINGSYM"] == selected_symbol]
@@ -80,10 +83,10 @@ else:
     price_input = st.number_input("Price", min_value=0.0, step=0.05, value=initial_ltp)
 
     with col3:
-    # ---- LTP display container (auto-refresh) ----
-        ltp_container = st.empty()
-        cash_container = st.empty()
-        margin_container = st.empty()
+    # ---- Fetch user limits ----
+        limits = client.api_get("/limits")
+        cash_available = float(limits.get("cash", 0.0))
+        cash_container.info(f"💰 Cash Available: ₹{cash_available:,.2f}")
 
     # ---- Fetch user limits ----
     limits = client.api_get("/limits")
