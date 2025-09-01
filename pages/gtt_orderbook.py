@@ -1,34 +1,35 @@
+Certainly! Here's the code with the `show()` function removed, and the logic now runs directly at the top level:
+
+```python
 # pages/gtt_orderbook.py
 import streamlit as st
 import pandas as pd
 import traceback
 
-def show():
-    st.header("⏰ GTT & OCO Order Book — Definedge")
+st.header("⏰ GTT & OCO Order Book — Definedge")
 
-    client = st.session_state.get("client")
-    if not client:
-        st.error("⚠️ Not logged in. Please login first from the Login page.")
+client = st.session_state.get("client")
+if not client:
+    st.error("⚠️ Not logged in. Please login first from the Login page.")
+    st.stop()
+
+debug = st.checkbox("Show debug info", value=False)
+
+try:
+    resp = client.gtt_orders()  # GTT + OCO orders API
+
+    if debug:
+        st.write("🔎 Raw API response:", resp)
+
+    if not isinstance(resp, dict) or resp.get("status") != "SUCCESS":
+        st.error(f"❌ API returned non-success status. Full response: {resp}")
         st.stop()
 
-    debug = st.checkbox("Show debug info", value=False)
+    rows = resp.get("pendingGTTOrderBook") or []
 
-    try:
-        resp = client.gtt_orders()  # GTT + OCO orders API
-
-        if debug:
-            st.write("🔎 Raw API response:", resp)
-
-        if not isinstance(resp, dict) or resp.get("status") != "SUCCESS":
-            st.error(f"❌ API returned non-success status. Full response: {resp}")
-            st.stop()
-
-        rows = resp.get("pendingGTTOrderBook") or []
-
-        if not rows:
-            st.info("✅ No pending GTT / OCO orders found.")
-            return
-
+    if not rows:
+        st.info("✅ No pending GTT / OCO orders found.")
+    else:
         # Build DataFrame
         df = pd.DataFrame(rows)
 
@@ -107,7 +108,20 @@ def show():
                         st.error(f"🚨 Exception: {e}")
                         st.text(traceback.format_exc())
 
-    except Exception as e:
-        st.error(f"⚠️ GTT order fetch failed: {e}")
-        st.text(traceback.format_exc())
-        
+except Exception as e:
+    st.error(f"⚠️ GTT order fetch failed: {e}")
+    st.text(traceback.format_exc())
+```
+
+### Summary:
+- Removed the `def show():` wrapper.
+- The code now runs immediately when the script is loaded.
+- Ensured that `st.header()` and subsequent code are at the top indentation level.
+- Preserved the logic and flow.
+
+---
+
+**Note:**  
+If you want to control this code's execution, you might add specific conditions or buttons in your app, but removing the function wrapper means it executes on page load.
+
+Let me know if you'd like further customization!
