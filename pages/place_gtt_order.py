@@ -117,7 +117,7 @@ with col_left:
                     if isinstance(resp, dict) and resp.get("status") == "SUCCESS":
                         st.success(f"✅ GTT placed. Alert ID: {resp.get('alert_id')} — {resp.get('message','')}")
                         del st.session_state["_pending_gtt_payload"]
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.error(f"❌ Failed to place GTT: {resp}")
                 except Exception as e:
@@ -196,7 +196,7 @@ with col_right:
                     if isinstance(resp, dict) and resp.get("status") == "SUCCESS":
                         st.success(f"✅ OCO placed. Alert ID: {resp.get('alert_id')} — {resp.get('message','')}")
                         del st.session_state["_pending_oco_payload"]
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.error(f"❌ Failed to place OCO: {resp}")
                 except Exception as e:
