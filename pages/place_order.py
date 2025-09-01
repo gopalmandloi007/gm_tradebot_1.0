@@ -93,17 +93,17 @@ else:
     col1, col2, col3 = st.columns([1, 1, 1])
     col4, col5 = st.columns([1, 1])
 
-    # Row 1
+    # Row 1: Order Type, Price Type, Product
     order_type = col1.radio("Order Type", ["BUY", "SELL"], label_visibility="collapsed")
     price_type = col2.radio("Price Type", ["LIMIT", "MARKET", "SL-LIMIT", "SL-MARKET"], label_visibility="collapsed")
     product_type = col3.selectbox("Product", ["NORMAL", "INTRADAY", "CNC"], index=2, label_visibility="collapsed")
 
-    # Row 2
+    # Row 2: Place by, Quantity, Amount
     place_by = col4.radio("Place by", ["Quantity", "Amount"], label_visibility="collapsed")
     quantity = col4.number_input("Qty", min_value=1, step=1, value=1, label_visibility="collapsed")
     amount = col5.number_input("Amt", min_value=0.0, step=0.05, value=0.0, label_visibility="collapsed")
     
-    # Additional inputs in a single row or below
+    # Row 3: Trigger Price, Validity, Remarks
     col6, col7, col8 = st.columns([1, 1, 1])
     trigger_price = col6.number_input("Trigger Price", min_value=0.0, step=0.05, value=0.0)
     validity = col7.selectbox("Validity", ["DAY", "IOC", "EOS"], index=0)
