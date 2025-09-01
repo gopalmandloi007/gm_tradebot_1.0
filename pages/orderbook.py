@@ -1,118 +1,141 @@
 # pages/orderbook.py
 import streamlit as st
+import traceback
 import pandas as pd
 
-st.set_page_config(page_title="Order Book", layout="wide")
+st.header("📑 Orderbook — Definedge")
 
-# ---- Client from session ----
 client = st.session_state.get("client")
 if not client:
-    st.error("⚠️ Not logged in")
-    st.stop()
-
-
-# ---- Status normalization ----
-def normalize_status(status: str, pending_qty: int) -> str:
-    status = (status or "").strip().upper()
-    if status in ["OPEN", "NEW", "PARTIALLY_FILLED", "PARTIALLY_FILLED", "PARTIALLY_FILLED"]:
-        return "ACTIVE"
-    elif status == "REJECTED":
-        return "REJECTED"
-    elif status in ["CANCELED", "COMPLETE"]:
-        return "COMPLETE"
-    elif status == "REPLACED":
-        return "REPLACED"
-    # fallback - agar rejected hai aur pending_qty > 0
-    if pending_qty > 0 and status == "REJECTED":
-        return "REJECTED"
-    return status
-
-
-# ---- Fetch orders ----
-def load_orders():
+    st.error("⚠️ Not logged in. Please login first from the Login page.")
+else:
     try:
-        data = client.get_orders()
-        df = pd.DataFrame(data)
-        if df.empty:
-            return df
-        if "pending_qty" not in df.columns:
-            df["pending_qty"] = 0
-        df["normalized_status"] = df.apply(
-            lambda x: normalize_status(x.get("order_status"), x.get("pending_qty", 0)),
-            axis=1
-        )
-        return df
-    except Exception as e:
-        st.error(f"⚠️ Failed to load orders: {e}")
-        return pd.DataFrame()
-
-
-# ---- Modify Order ----
-def modify_order(order_id, price=None, qty=None):
-    payload = {"order_id": order_id}
-    if price: 
-        payload["price"] = price
-    if qty:
-        payload["quantity"] = qty
-    try:
-        res = client.modify_order(payload)
-        if res.get("status") == "SUCCESS":
-            st.success(f"Order {order_id} modified successfully ✅")
-            st.rerun()
+        # Fetch orderbook
+        resp = client.get_orders()  # calls /orders
+        if not resp:
+            st.warning("⚠️ API returned empty response")
         else:
-            st.error(f"Modify failed: {res}")
+            orders = resp.get("orders", [])
+            if not orders:
+                st.info("No orders found in orderbook today.")
+            else:
+                df = pd.DataFrame(orders)
+
+                # Show columns for debugging
+                st.caption(f"Available columns: {list(df.columns)}")
+
+                # Normalize status
+                if "order_status" in df.columns:
+                    df["normalized_status"] = (
+                        df["order_status"].astype(str)
+                        .str.replace("_", " ")
+                        .str.strip()
+                        .str.upper()
+                    )
+                else:
+                    df["normalized_status"] = None
+
+                # --- Full Orderbook ---
+                st.subheader("📋 Complete Orderbook")
+                st.dataframe(df, use_container_width=True)
+
+                # --- Filter Active Orders (OPEN / PARTIAL / pending_qty > 0) ---
+                st.subheader("⚙️ Active Orders (Open / Partially Filled)")
+
+                def is_active(row):
+                    status_val = str(row.get("normalized_status", "")).upper()
+                    pending_qty = float(row.get("pending_qty", 0) or 0)
+
+                    return (
+                        "OPEN" in status_val
+                        or "PARTIALLY" in status_val
+                        or "PARTIAL" in status_val
+                        or pending_qty > 0
+                    )
+
+                active_orders = df[df.apply(is_active, axis=1)]
+
+                if active_orders.empty:
+                    st.info("✅ No active orders to manage.")
+                else:
+                    # Compact table view
+                    display_cols = [
+                        "order_id", "tradingsymbol", "order_type",
+                        "quantity", "price", "product_type",
+                        "order_status", "pending_qty"
+                    ]
+                    display_cols = [c for c in display_cols if c in active_orders.columns]
+
+                    st.dataframe(active_orders[display_cols], use_container_width=True)
+
+                    # Inline action rows
+                    for idx, order in active_orders.iterrows():
+                        st.markdown("---")
+                        st.write(
+                            f"**Order ID:** {order['order_id']} | "
+                            f"Symbol: {order.get('tradingsymbol','')} | "
+                            f"Qty: {order.get('quantity','')} | Price: {order.get('price','')} | "
+                            f"Status: {order.get('order_status','')} | "
+                            f"Pending Qty: {order.get('pending_qty','')}"
+                        )
+
+                        col1, col2 = st.columns(2)
+
+                        # Cancel Order
+                        with col1:
+                            if st.button(f"❌ Cancel {order['order_id']}", key=f"cancel_{order['order_id']}"):
+                                try:
+                                    cancel_resp = client.cancel_order(order_id=order['order_id'])  # calls /cancel/{id}
+                                    st.write("🔎 Cancel API Response:", cancel_resp)
+                                    if cancel_resp.get("status") == "SUCCESS":
+                                        st.success(f"Order {order['order_id']} cancelled successfully ✅")
+                                        st.experimental_rerun()
+                                    else:
+                                        st.error(f"Cancel failed: {cancel_resp}")
+                                except Exception as e:
+                                    st.error(f"Cancel API failed: {e}")
+                                    st.text(traceback.format_exc())
+
+                        # Modify Order
+                        with col2:
+                            with st.form(key=f"modify_{order['order_id']}"):
+                                st.write("✏️ Modify Order")
+                                new_price = st.text_input(
+                                    "New Price", str(order.get("price", "")),
+                                    key=f"price_{order['order_id']}"
+                                )
+                                new_qty = st.text_input(
+                                    "New Quantity", str(order.get("quantity", "")),
+                                    key=f"qty_{order['order_id']}"
+                                )
+                                submitted = st.form_submit_button("Update Order")
+
+                                if submitted:
+                                    try:
+                                        payload = {
+                                            "exchange": order.get("exchange"),
+                                            "order_id": order["order_id"],
+                                            "tradingsymbol": order.get("tradingsymbol"),
+                                            "quantity": int(new_qty) if new_qty else order.get("quantity"),
+                                            "price": float(new_price) if new_price else order.get("price"),
+                                            "product_type": order.get("product_type", "NORMAL"),
+                                            "order_type": order.get("order_type"),
+                                            "price_type": order.get("price_type", "LIMIT"),
+                                        }
+                                        # remove None/empty
+                                        payload = {k: v for k, v in payload.items() if v not in [None, ""]}
+
+                                        modify_resp = client.modify_order(payload)  # calls /modify
+                                        st.write("🔎 Modify API Response:", modify_resp)
+                                        if modify_resp.get("status") == "SUCCESS":
+                                            st.success(f"Order {order['order_id']} modified successfully ✅")
+                                            st.experimental_rerun()
+                                        else:
+                                            st.error(f"Modify failed: {modify_resp}")
+                                    except Exception as e:
+                                        st.error(f"Modify API failed: {e}")
+                                        st.text(traceback.format_exc())
+
     except Exception as e:
-        st.error(f"Modify API failed: {e}")
-
-
-# ---- Cancel Order ----
-def cancel_order(order_id):
-    try:
-        res = client.cancel_order(order_id)
-        if res.get("status") == "SUCCESS":
-            st.success(f"Order {order_id} cancelled ✅")
-            st.rerun()
-        else:
-            st.error(f"Cancel failed: {res}")
-    except Exception as e:
-        st.error(f"Cancel API failed: {e}")
-
-
-# ---- Main ----
-df = load_orders()
-if df.empty:
-    st.info("📭 No orders found")
-    st.stop()
-
-# Active Orders
-active_orders = df[df["normalized_status"] == "ACTIVE"]
-if not active_orders.empty:
-    st.subheader("⚙️ Active Orders (Open / Partially Filled)")
-    for _, row in active_orders.iterrows():
-        with st.expander(f"{row['tradingsymbol']} | Qty: {row['quantity']} | Price: {row['price']}"):
-            col1, col2, col3 = st.columns([1, 1, 2])
-            with col1:
-                if st.button("✏️ Modify", key=f"mod_{row['order_id']}"):
-                    with st.form(f"modify_form_{row['order_id']}"):
-                        new_price = st.number_input("New Price", value=float(row["price"]), key=f"price_{row['order_id']}")
-                        new_qty = st.number_input("New Quantity", value=int(row["pending_qty"]), key=f"qty_{row['order_id']}")
-                        submitted = st.form_submit_button("Submit Modification")
-                        if submitted:
-                            modify_order(row["order_id"], new_price, new_qty)
-            with col2:
-                if st.button("❌ Cancel", key=f"cancel_{row['order_id']}"):
-                    cancel_order(row["order_id"])
-            with col3:
-                st.json(row.to_dict())
-
-# Rejected Orders
-rejected_orders = df[df["normalized_status"] == "REJECTED"]
-if not rejected_orders.empty:
-    st.subheader("🚫 Rejected Orders")
-    st.dataframe(rejected_orders)
-
-# Completed Orders
-completed_orders = df[df["normalized_status"] == "COMPLETE"]
-if not completed_orders.empty:
-    st.subheader("✅ Completed Orders")
-    st.dataframe(completed_orders)
+        st.error(f"Fetching orderbook failed: {e}")
+        st.text(traceback.format_exc())
