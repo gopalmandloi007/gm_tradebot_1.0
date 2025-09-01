@@ -56,7 +56,7 @@ else:
     df_symbols = load_master_symbols()
 
     # ---- Exchange selection ----
-    exchange = st.radio("Exchange", ["NSE", "BSE", "NFO", "MCX"], index=0)
+    exchange = st.radio("Exchange", ["NSE", "BSE", "NFO", "MCX"], index=0, horizontal=True)
 
     # Filter master for selected exchange
     df_exch = df_symbols[df_symbols["SEGMENT"] == exchange]
