@@ -2,14 +2,14 @@
 import streamlit as st
 import traceback
 
-def show_place_oco_order():
-    st.header("🎯 Place OCO Order — Definedge")
+# Remove the show_place_oco_order() function; execute code directly
 
-    client = st.session_state.get("client")
-    if not client:
-        st.error("⚠️ Not logged in. Please login first from the Login page.")
-        st.stop()
+st.header("🎯 Place OCO Order — Definedge")
 
+client = st.session_state.get("client")
+if not client:
+    st.error("⚠️ Not logged in. Please login first from the Login page.")
+else:
     debug = st.checkbox("Show debug info", value=False)
 
     with st.form("oco_place_form"):
@@ -30,43 +30,41 @@ def show_place_oco_order():
     if submitted:
         if not tradingsymbol.strip():
             st.error("Please provide a trading symbol.")
-            return
-
-        payload = {
-            "exchange": exchange,
-            "tradingsymbol": tradingsymbol.strip(),
-            "order_type": order_type,
-            "target_quantity": str(int(target_quantity)),
-            "stoploss_quantity": str(int(stoploss_quantity)),
-            "target_price": str(target_price),
-            "stoploss_price": str(stoploss_price),
-        }
-        if remarks:
-            payload["remarks"] = remarks
-
-        if debug:
-            st.write("🔎 Debug: Payload to send")
-            st.json(payload)
-
-        try:
-            resp = client.oco_place(payload)
+        else:
+            payload = {
+                "exchange": exchange,
+                "tradingsymbol": tradingsymbol.strip(),
+                "order_type": order_type,
+                "target_quantity": str(int(target_quantity)),
+                "stoploss_quantity": str(int(stoploss_quantity)),
+                "target_price": str(target_price),
+                "stoploss_price": str(stoploss_price),
+            }
+            if remarks:
+                payload["remarks"] = remarks
 
             if debug:
-                st.write("🔎 Raw API Response")
-                st.write(resp)
+                st.write("🔎 Debug: Payload to send")
+                st.json(payload)
 
-            if isinstance(resp, dict) and resp.get("status") == "SUCCESS":
-                st.success(f"✅ {resp.get('message')} — Alert ID: {resp.get('alert_id')}")
-                st.write(resp)
-            else:
-                st.error(f"❌ Failed to place OCO order. Response: {resp}")
+            try:
+                resp = client.oco_place(payload)
 
-        except Exception as e:
-            st.error(f"🚨 Exception while placing OCO order: {e}")
-            st.text(traceback.format_exc())
+                if debug:
+                    st.write("🔎 Raw API Response")
+                    st.write(resp)
+
+                if isinstance(resp, dict) and resp.get("status") == "SUCCESS":
+                    st.success(f"✅ {resp.get('message')} — Alert ID: {resp.get('alert_id')}")
+                    st.write(resp)
+                else:
+                    st.error(f"❌ Failed to place OCO order. Response: {resp}")
+
+            except Exception as e:
+                st.error(f"🚨 Exception while placing OCO order: {e}")
+                st.text(traceback.format_exc())
 
     st.markdown(
         "💡 Tip: After placement, open **Order Book / GTT Order Book** to verify. "
         "If it does not appear immediately, refresh that page."
-                                                                  )
-    
+    )
