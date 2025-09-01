@@ -98,7 +98,7 @@ else:
             quantity = st.number_input("Quantity", min_value=1, step=1, value=1)
         with col2:
             amount = st.number_input("Amount", min_value=0.0, step=0.05, value=0.0)
-        with col2:
+        with col3:
             product_type = st.selectbox("Product Type", ["NORMAL", "INTRADAY", "CNC"], index=2)
         
         trigger_price = st.number_input("Trigger Price (for SL orders)", min_value=0.0, step=0.05, value=0.0)
