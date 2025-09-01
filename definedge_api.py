@@ -114,7 +114,7 @@ class DefinedgeClient:
         return self.api_get(f"/ococancel/{alertid}")
 
     def oco_modify(self, payload: dict):
-    return self.api_post("/ocomodify", payload)
+        return self.api_post("/ocomodify", payload)
 
     def historical_csv(self, segment: str, token: str, timeframe: str, frm: str, to: str) -> str:
         url = f"{BASE_DATA}/history/{segment}/{token}/{timeframe}/{frm}/{to}"
