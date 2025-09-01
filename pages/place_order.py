@@ -5,6 +5,7 @@ import io
 import zipfile
 import requests
 import time
+import os
 
 MASTER_URL = "https://app.definedgesecurities.com/public/allmaster.zip"
 MASTER_FILE = "data/master/allmaster.csv"
@@ -21,8 +22,6 @@ def download_and_extract_master():
                 df = pd.read_csv(f, header=None)
         df.columns = ["SEGMENT","TOKEN","SYMBOL","TRADINGSYM","INSTRUMENT","EXPIRY",
                       "TICKSIZE","LOTSIZE","OPTIONTYPE","STRIKE","PRICEPREC","MULTIPLIER","ISIN","PRICEMULT","COMPANY"]
-        # Save locally
-        import os
         os.makedirs("data/master", exist_ok=True)
         df.to_csv(MASTER_FILE, index=False)
         return df
@@ -45,8 +44,7 @@ def fetch_ltp(client, exchange, token):
     except:
         return 0.0
 
-# ---- Main code execution (no function wrapping) ----
-
+# ---- Main code execution ----
 st.header("🛒 Place Order — Definedge")
 
 client = st.session_state.get("client")
@@ -54,80 +52,74 @@ if not client:
     st.error("⚠️ Not logged in. Please login first from Login page.")
 else:
     df_symbols = load_master_symbols()
-    # TOP WINDOW
-    col1, col2, col3 = st.columns(3)
+
     # ---- Exchange selection ----
     exchange = st.radio("Exchange", ["NSE", "BSE", "NFO", "MCX"], index=0, horizontal=True)
-    with col1:
-    # ---- Trading Symbol selection ----
-        selected_symbol = st.selectbox(
-            "Trading Symbol",
-            df_exch["TRADINGSYM"].tolist()
-        )
 
     # Filter master for selected exchange
     df_exch = df_symbols[df_symbols["SEGMENT"] == exchange]
 
-    with col2:
+    # ---- Trading Symbol selection ----
+    selected_symbol = st.selectbox(
+        "Trading Symbol",
+        df_exch["TRADINGSYM"].tolist()
+    )
+
     # ---- LTP display container (auto-refresh) ----
-        ltp_container = st.empty()
-        cash_container = st.empty()
-        margin_container = st.empty()
+    ltp_container = st.empty()
+    cash_container = st.empty()
 
     # Get token for LTP
     token_row = df_exch[df_exch["TRADINGSYM"] == selected_symbol]
     token = int(token_row["TOKEN"].values[0]) if not token_row.empty else None
-
-    # ---- Initial LTP fetch (set price once) ----
-    initial_ltp = fetch_ltp(client, exchange, token) if token else 0.0
-    price_input = st.number_input("Price", min_value=0.0, step=0.05, value=initial_ltp)
-
-    with col3:
-    # ---- Fetch user limits ----
-        limits = client.api_get("/limits")
-        cash_available = float(limits.get("cash", 0.0))
-        cash_container.info(f"💰 Cash Available: ₹{cash_available:,.2f}")
 
     # ---- Fetch user limits ----
     limits = client.api_get("/limits")
     cash_available = float(limits.get("cash", 0.0))
     cash_container.info(f"💰 Cash Available: ₹{cash_available:,.2f}")
 
+    # ---- Initial LTP fetch (set price once) ----
+    initial_ltp = fetch_ltp(client, exchange, token) if token else 0.0
+    price_input = st.number_input("Price", min_value=0.0, step=0.05, value=initial_ltp)
+
     # ---- Order form ----
     with st.form("place_order_form"):
         st.subheader("Order Details")
-                    
         order_type = st.radio("Order Type", ["BUY", "SELL"], index=0, horizontal=True)
         price_type = st.radio("Price Type", ["LIMIT", "MARKET", "SL-LIMIT", "SL-MARKET"], index=0, horizontal=True)
         place_by = st.radio("Place by", ["Quantity", "Amount"], index=0, horizontal=True)
+
         col1, col2, col3 = st.columns(3)
         with col1:
-            quantity = st.number_input("Quantity", min_value=1, step=1, value=1)
+            quantity = st.number_input("Quantity", min_value=1, step=1, value=1, key="quantity")
         with col2:
-            amount = st.number_input("Amount", min_value=0.0, step=0.05, value=0.0)
+            amount = st.number_input("Amount", min_value=0.0, step=0.05, value=0.0, key="amount")
         with col3:
-            trigger_price = st.number_input("Trigger Price (for SL orders)", min_value=0.0, step=0.05, value=0.0)
-        
-        col1, col2 = st.columns(2)
-        with col1:
+            trigger_price = st.number_input("Trigger Price (for SL orders)", min_value=0.0, step=0.05, value=0.0, key="trigger_price")
+
+        col4, col5 = st.columns(2)
+        with col4:
             product_type = st.selectbox("Product Type", ["NORMAL", "INTRADAY", "CNC"], index=2)
-        with col2:
+        with col5:
             validity = st.selectbox("Validity", ["DAY", "IOC", "EOS"], index=0)
+
         remarks = st.text_input("Remarks (optional)", "")
+
         submitted = st.form_submit_button("🚀 Place Order")
 
     # ---- Auto-refresh LTP ----
     if token:
-        for i in range(1):  # only one refresh on page load, further can use while loop in async or callback
-            current_ltp = fetch_ltp(client, exchange, token)
-            ltp_container.metric("📈 LTP", f"{current_ltp:.2f}")
-            time.sleep(1)  # adjust interval if needed
+        current_ltp = fetch_ltp(client, exchange, token)
+        ltp_container.metric("📈 LTP", f"{current_ltp:.2f}")
+        time.sleep(1)  # simple delay for refresh
 
     # ---- Place order ----
     if submitted:
-        # Determine quantity if placed by amount
+        # Adjust quantity if placing by amount
         if place_by == "Amount" and amount > 0 and initial_ltp > 0:
-            quantity = int(amount // initial_ltp)
+            quantity = max(1, int(amount // initial_ltp))
+        else:
+            quantity = max(1, int(quantity))  # fallback if needed
 
         payload = {
             "exchange": exchange,
