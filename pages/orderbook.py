@@ -1,3 +1,13 @@
+please correct this code as Cancel API failed: DefinedgeClient.cancel_order() got an unexpected keyword argument 'order_id'. Did you mean 'orderid'?
+
+Traceback (most recent call last):
+  File "/mount/src/gm_tradebot_1.0/pages/orderbook.py", line 74, in <module>
+    cancel_resp = client.cancel_order(order_id=order['order_id'])
+TypeError: DefinedgeClient.cancel_order() got an unexpected keyword argument 'order_id'. Did you mean 'orderid'?
+
+
+
+
 # pages/orderbook.py
 import streamlit as st
 import traceback
@@ -69,12 +79,12 @@ else:
 
                                 # Cancel Order
                                 with col1:
-                                    if st.button(f"❌ Cancel {order['orderid']}", key=f"cancel_{order['orderid']}"):
+                                    if st.button(f"❌ Cancel {order['order_id']}", key=f"cancel_{order['order_id']}"):
                                         try:
-                                            cancel_resp = client.cancel_order(orderid=order['orderid'])
+                                            cancel_resp = client.cancel_order(order_id=order['order_id'])
                                             st.write("🔎 Cancel API Response:", cancel_resp)
                                             if cancel_resp.get("status") == "SUCCESS":
-                                                st.success(f"Order {order['orderid']} cancelled successfully ✅")
+                                                st.success(f"Order {order['order_id']} cancelled successfully ✅")
                                                 st.experimental_rerun()
                                             else:
                                                 st.error(f"Cancel failed: {cancel_resp}")
@@ -138,7 +148,7 @@ else:
                                 order_data = {}
 
                             if action == "Cancel":
-                                cancel_resp = client.cancel_order(orderid=manual_order_id)
+                                cancel_resp = client.cancel_order(order_id=manual_order_id)
                                 st.write("🔎 Cancel API Response:", cancel_resp)
                                 if cancel_resp.get("status") == "SUCCESS":
                                     st.success(f"Order {manual_order_id} cancelled successfully ✅")
