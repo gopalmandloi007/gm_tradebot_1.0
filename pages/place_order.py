@@ -109,6 +109,10 @@ else:
 
         remarks = st.text_input("Remarks (optional)", "")
 
+        # --- AMO Option ---
+        amo_input = st.checkbox("AMO Order (Input 'Yes' to confirm)", value=False)
+        amo = "YES" if amo_input else ""
+
         submitted = st.form_submit_button("🚀 Place Order")
 
     # --- Auto-refresh LTP ---
@@ -133,6 +137,7 @@ else:
             "product_type": product_type,
             "quantity": str(quantity),
             "validity": validity,
+            "amo": amo,  # include AMO field here
         }
         if trigger_price > 0:
             payload["trigger_price"] = str(trigger_price)
