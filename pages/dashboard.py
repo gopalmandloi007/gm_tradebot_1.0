@@ -1,6 +1,3 @@
-Certainly! Here's the code with the `import` statements and the main code block (which was inside the `show()` function) removed, and indentation corrected. Now, the code is at the top level and ready to run directly:
-
-```python
 # pages/dashboard.py
 import streamlit as st
 import pandas as pd
@@ -11,6 +8,7 @@ import plotly.graph_objects as go
 
 DEFAULT_TOTAL_CAPITAL = 1400000  # Default capital for % allocation
 
+# Top-level Streamlit commands
 st.header("📊 Trading Dashboard — Definedge")
 
 client = st.session_state.get("client")
@@ -163,11 +161,3 @@ else:
     except Exception as e:
         st.error(f"⚠️ Dashboard fetch failed: {e}")
         st.text(e)
-```
-
-**Note:**  
-- I preserved the logical flow inside the `try` block.  
-- Removed the function wrapper (`show()`), so the code executes directly upon loading the script.  
-- Ensured proper indentation for readability and correctness.
-
-Let me know if you'd like further adjustments!
