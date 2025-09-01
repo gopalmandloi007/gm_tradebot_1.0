@@ -16,7 +16,6 @@ def download_and_extract_master():
         r = requests.get(MASTER_URL)
         r.raise_for_status()
         with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-            # Assuming first CSV in zip is the master
             csv_name = z.namelist()[0]
             with z.open(csv_name) as f:
                 df = pd.read_csv(f, header=None)
@@ -44,7 +43,6 @@ def fetch_ltp(client, exchange, token):
     except:
         return 0.0
 
-# ---- Main code execution ----
 st.header("🛒 Place Order — Definedge")
 
 client = st.session_state.get("client")
@@ -53,74 +51,79 @@ if not client:
 else:
     df_symbols = load_master_symbols()
 
-    # ---- Exchange selection ----
+    # --- Exchange selection ---
     exchange = st.radio("Exchange", ["NSE", "BSE", "NFO", "MCX"], index=0, horizontal=True)
 
     # Filter master for selected exchange
     df_exch = df_symbols[df_symbols["SEGMENT"] == exchange]
 
-    # ---- Trading Symbol selection ----
+    # --- Trading Symbol selection ---
     selected_symbol = st.selectbox(
         "Trading Symbol",
         df_exch["TRADINGSYM"].tolist()
     )
 
-    # ---- LTP display container (auto-refresh) ----
-    ltp_container = st.empty()
-    cash_container = st.empty()
-
-    # Get token for LTP
+    # --- Fetch token ---
     token_row = df_exch[df_exch["TRADINGSYM"] == selected_symbol]
     token = int(token_row["TOKEN"].values[0]) if not token_row.empty else None
 
-    # ---- Fetch user limits ----
+    # --- Fetch user limits ---
     limits = client.api_get("/limits")
     cash_available = float(limits.get("cash", 0.0))
-    cash_container.info(f"💰 Cash Available: ₹{cash_available:,.2f}")
 
-    # ---- Initial LTP fetch (set price once) ----
-    initial_ltp = fetch_ltp(client, exchange, token) if token else 0.0
-    price_input = st.number_input("Price", min_value=0.0, step=0.05, value=initial_ltp)
+    # --- Fetch current LTP ---
+    current_ltp = fetch_ltp(client, exchange, token) if token else 0.0
+    price_input = st.number_input("Price", min_value=0.0, step=0.05, value=current_ltp)
 
-    # ---- Order form ----
+    # --- Top info display: Trading Symbol, LTP, Cash ---
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("**Trading Symbol**")
+        st.text(selected_symbol)
+    with col2:
+        st.markdown("**📈 LTP**")
+        st.metric(label="", value=f"{current_ltp:.2f}")
+    with col3:
+        st.markdown("**💰 Cash Available:**")
+        st.metric(label="", value=f"₹{cash_available:,.2f}")
+
+    # --- Order form ---
     with st.form("place_order_form"):
         st.subheader("Order Details")
         order_type = st.radio("Order Type", ["BUY", "SELL"], index=0, horizontal=True)
         price_type = st.radio("Price Type", ["LIMIT", "MARKET", "SL-LIMIT", "SL-MARKET"], index=0, horizontal=True)
         place_by = st.radio("Place by", ["Quantity", "Amount"], index=0, horizontal=True)
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            quantity = st.number_input("Quantity", min_value=1, step=1, value=1, key="quantity")
-        with col2:
-            amount = st.number_input("Amount", min_value=0.0, step=0.05, value=0.0, key="amount")
-        with col3:
-            trigger_price = st.number_input("Trigger Price (for SL orders)", min_value=0.0, step=0.05, value=0.0, key="trigger_price")
+        col_qty, col_amt = st.columns(2)
+        with col_qty:
+            quantity = st.number_input("Quantity", min_value=1, step=1, value=1)
+        with col_amt:
+            amount = st.number_input("Amount", min_value=0.0, step=0.05, value=0.0)
+        trigger_price = st.number_input("Trigger Price (for SL orders)", min_value=0.0, step=0.05, value=0.0)
 
-        col4, col5 = st.columns(2)
-        with col4:
+        col_prod, col_valid = st.columns(2)
+        with col_prod:
             product_type = st.selectbox("Product Type", ["NORMAL", "INTRADAY", "CNC"], index=2)
-        with col5:
+        with col_valid:
             validity = st.selectbox("Validity", ["DAY", "IOC", "EOS"], index=0)
 
         remarks = st.text_input("Remarks (optional)", "")
 
         submitted = st.form_submit_button("🚀 Place Order")
 
-    # ---- Auto-refresh LTP ----
+    # --- Auto-refresh LTP ---
     if token:
         current_ltp = fetch_ltp(client, exchange, token)
-        ltp_container.metric("📈 LTP", f"{current_ltp:.2f}")
-        time.sleep(1)  # simple delay for refresh
+        st.metric("📈 LTP", f"{current_ltp:.2f}")
+        time.sleep(1)
 
-    # ---- Place order ----
+    # --- Handle order placement ---
     if submitted:
-        # Adjust quantity if placing by amount
-        if place_by == "Amount" and amount > 0 and initial_ltp > 0:
-            quantity = max(1, int(amount // initial_ltp))
+        # Calculate quantity if placed by amount
+        if place_by == "Amount" and amount > 0 and current_ltp > 0:
+            quantity = max(1, int(amount // current_ltp))
         else:
-            quantity = max(1, int(quantity))  # fallback if needed
-
+            quantity = max(1, int(quantity))
         payload = {
             "exchange": exchange,
             "tradingsymbol": selected_symbol,
