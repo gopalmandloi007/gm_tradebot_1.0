@@ -39,7 +39,7 @@ else:
                 # --- Segregated Orderbook by Status ---
                 st.subheader("📊 Orders Segregated by Status")
 
-                status_categories = ["CANCELED", "COMPLETE", "NEW", "OPEN", "REJECTED", "REPLACED"]
+                status_categories = ["OPEN", "NEW", "COMPLETE","CANCELED", "REJECTED", "REPLACED"]
 
                 for status in status_categories:
                     subset = df[df["normalized_status"] == status]
