@@ -200,7 +200,7 @@ with st.form("place_order_form"):
     else:
         price_input = float(st.number_input("Price (per unit)", min_value=0.0, step=0.05, value=max(current_ltp, 0.0)))
 
-    product_type = st.selectbox("Product Type", ["NORMAL", "INTRADAY", "CNC"], index=0)
+    product_type = st.selectbox("Product Type", ["NORMAL", "INTRADAY", "CNC"], index=2)
     validity = st.selectbox("Validity", ["DAY", "IOC", "EOS"], index=0)
     remarks = st.text_input("Remarks (optional)")
     amo_flag = st.checkbox("AMO order (after market order)", value=False)
@@ -250,13 +250,17 @@ if submit:
     elif price_type != "MARKET" and effective_price <= 0:
         st.error("Please provide a valid price.")
     else:
-        # Build payload
+        # Decide which price to send
+        # If user has specified a desired price, use it; otherwise, fall back to effective_price (LTP)
+        order_price = desired_order_price if 'desired_order_price' in locals() and desired_order_price else effective_price
+
+        # Build payload with the chosen price
         payload = {
             "exchange": _safe_str(exchange),
             "tradingsymbol": _safe_str(selected_symbol),
             "order_type": _safe_str(order_type),
-            # For market orders, some APIs expect price blank or LTP — we use LTP
-            "price": _safe_str(round(float(effective_price), 2)),
+            # Use the user-specified price if available
+            "price": _safe_str(round(float(order_price), 2)),
             "price_type": _safe_str(price_type),
             "product_type": _safe_str(product_type),
             "quantity": _safe_str(int(computed_qty)),
