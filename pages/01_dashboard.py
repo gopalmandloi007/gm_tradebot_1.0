@@ -81,75 +81,84 @@ try:
     df = pd.DataFrame(rows)
 
     # ------------------ Fetch LTP + robust prev_close per symbol ------------------
-    st.info("Fetching live prices and previous close (robust logic).")
-    ltp_list = []
-    prev_close_list = []
-    today_dt = datetime.now()
-    today_date = today_dt.date()
+st.info("Fetching live prices and previous close (robust logic).")
+ltp_list = []
+prev_close_list = []
 
-    for idx, row in df.iterrows():
-        token = row.get("token")
-        # safe quote fetch
-        try:
-            quote_resp = client.get_quotes(exchange="NSE", token=token)
-            if isinstance(quote_resp, dict):
-                ltp_val = quote_resp.get("ltp") or quote_resp.get("last_price") or quote_resp.get("lastTradedPrice")
+today_dt = datetime.now()
+today_date = today_dt.date()
+
+for idx, row in df.iterrows():
+    token = row.get("token")
+    # safe quote fetch
+    try:
+        quote_resp = client.get_quotes(exchange="NSE", token=token)
+        if isinstance(quote_resp, dict):
+            ltp_val = quote_resp.get("ltp") or quote_resp.get("last_price") or quote_resp.get("lastTradedPrice")
+        else:
+            ltp_val = None
+        ltp = float(ltp_val or 0.0)
+    except Exception:
+        ltp = 0.0
+    ltp_list.append(ltp)
+
+    # robust prev_close: prefer the last FULL trading day close (date < today)
+    prev_close = ltp
+    try:
+        from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
+        to_date = today_dt.strftime("%d%m%Y%H%M")
+        hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_date, to=to_date)
+
+        # some brokers return CSV bytes or string; handle both
+        if not isinstance(hist_csv, str):
+            hist_csv = str(hist_csv)
+
+        hist_df = pd.read_csv(io.StringIO(hist_csv), header=None)
+        # dynamic columns
+        if hist_df.shape[1] >= 6:
+            if hist_df.shape[1] == 7:
+                hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
             else:
-                ltp_val = None
-            ltp = float(ltp_val or 0.0)
-        except Exception:
-            ltp = 0.0
-        ltp_list.append(ltp)
+                hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
 
-        # robust prev_close: prefer the last FULL trading day close (date < today)
-        prev_close = ltp
-        try:
-            from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
-            to_date = today_dt.strftime("%d%m%Y%H%M")
-            hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_date, to=to_date)
+            # try multiple date formats
+            def try_parse(dt_str):
+                for fmt in ("%d-%m-%Y %H:%M", "%d-%m-%Y", "%Y-%m-%d %H:%M:%S", "%d%m%Y%H%M", "%Y-%m-%d"): 
+                    try:
+                        return pd.to_datetime(dt_str, format=fmt, dayfirst=True)
+                    except Exception:
+                        continue
+                # fallback
+                return pd.to_datetime(dt_str, dayfirst=True, errors='coerce')
 
-            # some brokers return CSV bytes or string; handle both
-            if not isinstance(hist_csv, str):
-                hist_csv = str(hist_csv)
+            hist_df["DateTime"] = hist_df["DateTime"].apply(try_parse)
+            hist_df = hist_df.dropna(subset=["DateTime"]).sort_values(by="DateTime")
+            hist_df["date_only"] = hist_df["DateTime"].dt.date
 
-            hist_df = pd.read_csv(io.StringIO(hist_csv), header=None)
-            # dynamic columns
-            if hist_df.shape[1] >= 6:
-                if hist_df.shape[1] == 7:
-                    hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
-                else:
-                    hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
+            # NEW: Get yesterday's date
+            yesterday_date = today_date - timedelta(days=1)
 
-                # try multiple date formats
-                def try_parse(dt_str):
-                    for fmt in ("%d-%m-%Y %H:%M", "%d-%m-%Y", "%Y-%m-%d %H:%M:%S", "%d%m%Y%H%M", "%Y-%m-%d"): 
-                        try:
-                            return pd.to_datetime(dt_str, format=fmt, dayfirst=True)
-                        except Exception:
-                            continue
-                    # fallback
-                    return pd.to_datetime(dt_str, dayfirst=True, errors='coerce')
-
-                hist_df["DateTime"] = hist_df["DateTime"].apply(try_parse)
-                hist_df = hist_df.dropna(subset=["DateTime"]).sort_values(by="DateTime")
-                hist_df["date_only"] = hist_df["DateTime"].dt.date
-
-                # pick last date strictly before today
+            # Try to get data for yesterday
+            prev_days = hist_df[hist_df["date_only"] == yesterday_date]
+            if not prev_days.empty:
+                prev_close = float(prev_days.iloc[-1]["Close"])
+            else:
+                # fallback: get the last date before today
                 prev_days = hist_df[hist_df["date_only"] < today_date]
                 if not prev_days.empty:
                     prev_close = float(prev_days.iloc[-1]["Close"])
                 else:
-                    # if no earlier date (maybe today only), fallback to last available close (may be today's partial)
+                    # fallback: use the latest available data
                     prev_close = float(hist_df.iloc[-1]["Close"])
-            else:
-                prev_close = ltp
-        except Exception:
+        else:
             prev_close = ltp
+    except Exception:
+        prev_close = ltp
 
-        prev_close_list.append(prev_close)
+    prev_close_list.append(prev_close)
 
-    df["ltp"] = ltp_list
-    df["prev_close"] = prev_close_list
+df["ltp"] = ltp_list
+df["prev_close"] = prev_close_list
 
     # ------------------ Basic P&L + allocation ------------------
     df["invested_value"] = df["avg_buy_price"] * df["quantity"]
