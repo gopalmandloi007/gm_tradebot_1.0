@@ -1,429 +1,88 @@
-# pages/historical_fetcher.py
-import streamlit as st
-import pandas as pd
-import io
-import os
-import zipfile
-import time
 import requests
-import traceback
-import re
+import zipfile
+import io
+import pandas as pd
 from datetime import datetime, timedelta
-from typing import Optional
+import streamlit as st
 
-st.set_page_config(layout="wide")
-st.title("📥 Historical Fetcher — Definedge (NSE multi-symbol, last N years)")
+# ------------------ CONFIG ------------------
+BASE_FILES = "https://app.definedgesecurities.com/public"
+BASE_DATA = "https://data.definedgesecurities.com/sds"
+MASTER_FILE = "nsecash.zip"
 
-# -------------------------
-# Robust CSV -> DataFrame parser (handles ddMMyyyyHHmm, ddMMyyyy, other formats)
-# -------------------------
-def _clean_dt_str(s: pd.Series) -> pd.Series:
-    sc = s.astype(str).str.strip()
-    sc = sc.str.replace(r'\.0+$', '', regex=True)      # "020720250000.0" -> "020720250000"
-    sc = sc.str.replace(r'["\']', '', regex=True)      # remove quotes
-    sc = sc.str.replace(r'\s+', '', regex=True)        # remove stray spaces
-    return sc
+# आप जो indexes चाहते हो
+TARGET_INDEXES = ["NIFTY 50", "NIFTY 500", "NIFTY MIDSML 400"]
 
-def _looks_like_ddmmyyyy_hhmm(val: str) -> bool:
-    return isinstance(val, str) and bool(re.fullmatch(r'\d{12}', val)) and 1 <= int(val[0:2]) <= 31 and 1 <= int(val[2:4]) <= 12 and 1900 <= int(val[4:8]) <= 2100
+# ------------------ HELPERS ------------------
 
-def _looks_like_ddmmyyyy(val: str) -> bool:
-    return isinstance(val, str) and bool(re.fullmatch(r'\d{8}', val)) and 1 <= int(val[0:2]) <= 31 and 1 <= int(val[2:4]) <= 12 and 1900 <= int(val[4:8]) <= 2100
-
-def _looks_like_epoch_seconds(val: str) -> bool:
-    return isinstance(val, str) and bool(re.fullmatch(r'\d{10}', val))
-
-def _looks_like_epoch_millis(val: str) -> bool:
-    return isinstance(val, str) and bool(re.fullmatch(r'\d{13}', val))
-
-def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
-    """
-    Robust parser for Definedge historical CSV (no header or with header).
-    Result columns: DateTime (datetime), Date (normalized midnight), DateStr (YYYY-MM-DD), Open, High, Low, Close, Volume
-    Deduplicates per calendar day keeping the last intraday record.
-    """
-    if not isinstance(hist_csv, str) or not hist_csv.strip():
-        return pd.DataFrame()
-
-    txt = hist_csv.strip()
-    lines = txt.splitlines()
-    if not lines:
-        return pd.DataFrame()
-
-    first_line = lines[0].lower()
-    header_indicators = ("date", "datetime", "open", "high", "low", "close", "volume", "oi", "timestamp")
-    use_header = any(h in first_line for h in header_indicators)
-
-    # read CSV (flexible)
-    try:
-        if use_header:
-            df = pd.read_csv(io.StringIO(txt), dtype=str)
-        else:
-            df = pd.read_csv(io.StringIO(txt), header=None, dtype=str)
-    except Exception:
-        try:
-            df = pd.read_csv(io.StringIO(txt), header=None, dtype=str, delim_whitespace=True)
-        except Exception:
-            return pd.DataFrame()
-
-    # Normalize column names if header present
-    cols = [str(c).lower() for c in df.columns.astype(str)]
-    if any("date" in c or "time" in c for c in cols):
-        col_map = {}
-        for c in df.columns:
-            lc = str(c).lower()
-            if "date" in lc or "time" in lc or "timestamp" in lc:
-                col_map[c] = "DateTime"
-            elif lc.startswith("open"):
-                col_map[c] = "Open"
-            elif lc.startswith("high"):
-                col_map[c] = "High"
-            elif lc.startswith("low"):
-                col_map[c] = "Low"
-            elif lc.startswith("close"):
-                col_map[c] = "Close"
-            elif "volume" in lc:
-                col_map[c] = "Volume"
-            elif lc == "oi":
-                col_map[c] = "OI"
-        df = df.rename(columns=col_map)
-    else:
-        # assume positions: DateTime, Open, High, Low, Close, Volume, [OI]
-        if df.shape[1] >= 6:
-            if df.shape[1] == 7:
-                df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
-            else:
-                df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
-        else:
-            return pd.DataFrame()
-
-    if "DateTime" not in df.columns:
-        return pd.DataFrame()
-
-    # Clean DateTime series
-    series_raw = df["DateTime"].fillna("").astype(str)
-    series = _clean_dt_str(series_raw)
-    dt = pd.Series([pd.NaT] * len(series), index=series.index, dtype="datetime64[ns]")
-
-    sample = series[series != ""]
-    n = len(sample)
-    if n == 0:
-        return pd.DataFrame()
-
-    # Heuristic: if many entries match ddMMyyyyHHmm or ddMMyyyy, parse specifically
-    n_ddmmhh = sample.apply(lambda v: _looks_like_ddmmyyyy_hhmm(v)).sum()
-    n_ddmm = sample.apply(lambda v: _looks_like_ddmmyyyy(v)).sum()
-
-    if n_ddmmhh >= max(1, int(0.35 * n)):
-        parsed = pd.to_datetime(series, format="%d%m%Y%H%M", errors="coerce")
-        dt = dt.fillna(parsed)
-
-    if n_ddmm >= max(1, int(0.35 * n)):
-        parsed = pd.to_datetime(series, format="%d%m%Y", errors="coerce")
-        dt = dt.fillna(parsed)
-
-    # Try explicit formats
-    if dt.isna().any():
-        formats_to_try = [
-            "%d-%m-%Y %H:%M", "%d-%m-%Y %H:%M:%S",
-            "%d-%m-%Y", "%d/%m/%Y", "%d/%m/%Y %H:%M",
-            "%Y-%m-%d %H:%M:%S", "%Y-%m-%d",
-            "%d%m%Y%H%M", "%d%m%Y"
-        ]
-        for fmt in formats_to_try:
-            if not dt.isna().any():
-                break
-            parsed = pd.to_datetime(series, format=fmt, dayfirst=True, errors="coerce")
-            dt = dt.fillna(parsed)
-
-    # Pandas infer (dayfirst)
-    if dt.isna().any():
-        parsed = pd.to_datetime(series, dayfirst=True, infer_datetime_format=True, errors="coerce")
-        dt = dt.fillna(parsed)
-
-    # Epoch heuristics (only as last resort)
-    if dt.isna().any():
-        def try_epoch_parse(v):
-            if not isinstance(v, str) or not v.isdigit():
-                return pd.NaT
-            if _looks_like_epoch_millis(v):
-                return pd.to_datetime(int(v), unit="ms", errors="coerce")
-            if _looks_like_epoch_seconds(v):
-                return pd.to_datetime(int(v), unit="s", errors="coerce")
-            return pd.NaT
-        parsed_epoch = series.apply(lambda v: try_epoch_parse(v))
-        dt = dt.fillna(parsed_epoch)
-
-    # Final fallback
-    if dt.isna().any():
-        parsed = pd.to_datetime(series, infer_datetime_format=True, errors="coerce")
-        dt = dt.fillna(parsed)
-
-    df["DateTime"] = dt
-    df = df.dropna(subset=["DateTime"]).copy()
-    if df.empty:
-        return pd.DataFrame()
-
-    # Convert OHLCV to numeric safely
-    for col in ("Open", "High", "Low", "Close", "Volume", "OI"):
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    # Normalize to date (calendar day) and keep last intraday row for each day
-    df["Date"] = df["DateTime"].dt.normalize()
-    df = df.sort_values("DateTime").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
-    df["DateStr"] = df["Date"].dt.strftime("%Y-%m-%d")
-
-    cols_keep = [c for c in ["DateTime", "Date", "DateStr", "Open", "High", "Low", "Close", "Volume"] if c in df.columns]
-    return df[cols_keep].copy()
-
-# -------------------------
-# Master download & loader (Definedge public URLs)
-# -------------------------
-MASTER_URLS = {
-    "NSE Cash (nsecash.zip)": "https://app.definedgesecurities.com/public/nsecash.zip",
-    "NSE FNO (nsefno.zip)": "https://app.definedgesecurities.com/public/nsefno.zip",
-    "All master (allmaster.zip)": "https://app.definedgesecurities.com/public/allmaster.zip"
-}
-
-@st.cache_data(show_spinner=False)
-def download_and_load_master(url: str) -> pd.DataFrame:
-    """
-    Download master zip from Definedge public URL and return a normalized master DataFrame
-    with columns: SEGMENT, TOKEN, TRADINGSYM
-    """
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-    z = zipfile.ZipFile(io.BytesIO(resp.content))
-    csv_names = [n for n in z.namelist() if n.lower().endswith(".csv")]
-    if not csv_names:
-        raise RuntimeError("No CSV found in master zip")
-    csv_name = csv_names[0]
-    raw = z.read(csv_name)
-    df = pd.read_csv(io.BytesIO(raw), dtype=str, keep_default_na=False)
-    # normalize column names
-    df.columns = [c.strip() for c in df.columns]
-    cols = {c.upper(): c for c in df.columns}
-    def safe_col(*cands):
-        for c in cands:
-            if c.upper() in cols:
-                return cols[c.upper()]
-        return None
-    trad_col = safe_col("TRADINGSYM", "TRADINGSYMBOL", "SYMBOL", "TRADINGSYM")
-    seg_col = safe_col("SEGMENT", "SEGMENTNAME", "EXCHANGE", "SEG")
-    token_col = safe_col("TOKEN")
-    # Ensure canonical columns exist (create if missing)
-    if trad_col:
-        df = df.rename(columns={trad_col: "TRADINGSYM"})
-    else:
-        df["TRADINGSYM"] = ""
-    if seg_col:
-        df = df.rename(columns={seg_col: "SEGMENT"})
-    else:
-        df["SEGMENT"] = ""
-    if token_col:
-        df = df.rename(columns={token_col: "TOKEN"})
-    else:
-        df["TOKEN"] = ""
-    # keep minimal
-    df = df[["SEGMENT", "TOKEN", "TRADINGSYM"]].copy()
-    # normalize content
-    df["SEGMENT"] = df["SEGMENT"].astype(str).str.strip().str.upper()
-    df["TRADINGSYM"] = df["TRADINGSYM"].astype(str).str.strip()
-    df["TOKEN"] = df["TOKEN"].astype(str).str.strip()
+def download_master(segment_zip: str) -> pd.DataFrame:
+    """Download & extract master file from Definedge"""
+    url = f"{BASE_FILES}/{segment_zip}"
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+        csv_name = z.namelist()[0]
+        with z.open(csv_name) as f:
+            df = pd.read_csv(f)
     return df
 
-# -------------------------
-# Helper: token lookup
-# -------------------------
-def token_for_symbol(master_df: pd.DataFrame, symbol: str) -> Optional[str]:
-    row = master_df[master_df["TRADINGSYM"] == symbol]
-    if not row.empty:
-        return str(row.iloc[0]["TOKEN"])
-    return None
+def get_token(df: pd.DataFrame, company_name: str) -> str:
+    """Get token of given index/company from master"""
+    row = df[df["COMPANY"].str.upper() == company_name.upper()]
+    if row.empty:
+        raise ValueError(f"❌ Token not found for {company_name}")
+    return str(row.iloc[0]["TOKEN"])
 
-# -------------------------
-# UI Controls
-# -------------------------
-client = st.session_state.get("client")
-if not client:
-    st.error("⚠️ Please login first (Login page). The Definedge client must be in st.session_state['client'].")
-    st.stop()
+def fetch_history(session_key: str, segment: str, token: str, timeframe: str, start: str, end: str) -> pd.DataFrame:
+    """Fetch historical OHLCV from Definedge"""
+    url = f"{BASE_DATA}/history/{segment}/{token}/{timeframe}/{start}/{end}"
+    headers = {"Authorization": session_key}
+    r = requests.get(url, headers=headers, timeout=60)
+    r.raise_for_status()
+    
+    # Convert CSV (no header) to DataFrame
+    df = pd.read_csv(io.StringIO(r.text), header=None)
+    df.columns = ["Datetime", "Open", "High", "Low", "Close", "Volume", "OI"]
+    df["Datetime"] = pd.to_datetime(df["Datetime"], format="%d-%m-%Y %H:%M:%S")
+    return df
 
-st.sidebar.header("Master & Fetch options")
-master_choice = st.sidebar.selectbox("Which master file to download", list(MASTER_URLS.keys()), index=0)
-years_back = st.sidebar.number_input("Years back (calendar years)", min_value=1, max_value=20, value=5)
-append_today = st.sidebar.checkbox("Append today's live quote (optional)", value=True)
-rate_sleep = st.sidebar.number_input("Seconds between API calls (rate-limit)", min_value=0.0, max_value=5.0, value=0.4, step=0.1)
-buffer_days = st.sidebar.number_input("Buffer days for historical request", min_value=10, max_value=120, value=40)
-show_raw_hist = st.sidebar.checkbox("Show raw historical CSV (debug)", value=False)
+# ------------------ MAIN ------------------
 
-# Download master
-with st.spinner("Downloading master..."):
-    try:
-        master_df = download_and_load_master(MASTER_URLS[master_choice])
-    except Exception as e:
-        st.error(f"Failed to download/load master: {e}")
-        st.stop()
+def main():
+    # Step 0: Session key from Streamlit session
+    session_key = st.session_state.get("api_session_key")
+    if not session_key:
+        st.error("⚠️ API session key not found in session state. Please login first.")
+        return
 
-# Flexible NSE filter: match any segment string that contains 'NSE' (covers 'NSE CASH', 'NSE-EQ', etc.)
-master_df["SEGMENT_NORM"] = master_df["SEGMENT"].astype(str).str.replace(r'[^A-Z0-9]', '', regex=True).str.upper()
-nse_df = master_df[master_df["SEGMENT"].str.contains("NSE", na=False) | master_df["SEGMENT_NORM"].str.contains("^NSE", na=False)].copy()
+    # Step 1: Download NSE Cash master
+    master_df = download_master(MASTER_FILE)
 
-if nse_df.empty:
-    st.error("⚠️ No NSE rows found in master. Please check the master file content.")
-    st.markdown("**Master file sample (first 20 rows)**")
-    st.dataframe(master_df.head(20))
-    st.stop()
+    # Step 2: Date range (last 1 year)
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=365)
+    frm = start_date.strftime("%d%m%Y0000")
+    to = end_date.strftime("%d%m%Y1530")
 
-st.sidebar.markdown(f"🔹 NSE symbols in master: **{len(nse_df)}**")
-
-# symbol list & search
-search = st.sidebar.text_input("Search symbols (substring filter)", value="")
-candidates = sorted(nse_df["TRADINGSYM"].unique())
-if search:
-    candidates = [s for s in candidates if search.lower() in s.lower()]
-
-# default selection logic: prefer 'NIFTY 500' candidate else first 20
-default_selection = []
-for s in candidates:
-    if "NIFTY" in s.upper() and "500" in s.upper():
-        default_selection = [s]; break
-if not default_selection:
-    default_selection = candidates[:20]
-
-selected_symbols = st.sidebar.multiselect("Select NSE symbols to fetch", options=candidates, default=default_selection)
-
-if not selected_symbols:
-    st.info("Please select one or more symbols from the sidebar to fetch historical data.")
-    st.stop()
-
-# Main action
-if st.button("⬇️ Fetch historical and prepare ZIP"):
-    years = int(years_back)
-    days_needed = int(years * 365)
-    today = datetime.today()
-    start_date_cutoff = (today - timedelta(days=days_needed)).date()
-
-    progress = st.progress(0)
-    status = st.empty()
-    csv_map = {}
-    summary = []
-
-    total = len(selected_symbols)
-    for idx, sym in enumerate(selected_symbols, start=1):
-        status.info(f"Fetching ({idx}/{total}): {sym}")
-        token = None
+    # Step 3: Fetch data for each index
+    all_data = {}
+    for index in TARGET_INDEXES:
         try:
-            token = token_for_symbol(nse_df, sym)
-            if not token:
-                raise RuntimeError("Token not found in master for symbol")
+            token = get_token(master_df, index)
+            st.write(f"✅ Fetching {index} (Token: {token}) ...")
+            df_hist = fetch_history(session_key, "NSE", token, "day", frm, to)
+            all_data[index] = df_hist
 
-            # request a buffered range to be safe
-            frm_dt = (today - timedelta(days=days_needed + int(buffer_days)))
-            frm = frm_dt.strftime("%d%m%Y%H%M")
-            to = today.strftime("%d%m%Y%H%M")
-
-            raw_csv = client.historical_csv(segment="NSE", token=str(token), timeframe="day", frm=frm, to=to)
-            if not raw_csv or not str(raw_csv).strip():
-                raise RuntimeError("Historical API returned empty for this token")
-
-            if show_raw_hist:
-                st.text_area(f"Raw CSV for {sym} (first 4000 chars)", str(raw_csv)[:4000], height=180)
-
-            df_hist = read_hist_csv_to_df(str(raw_csv))
-            if df_hist.empty:
-                raise RuntimeError("Parsed historical CSV is empty or failed to parse")
-
-            # filter to cutoff (last N years)
-            df_hist = df_hist[df_hist["Date"] >= pd.to_datetime(start_date_cutoff)].sort_values("Date").reset_index(drop=True)
-
-            # Optionally append today's live quote (safe: only if quote returns valid ltp)
-            if append_today:
-                try:
-                    q = client.get_quotes(exchange="NSE", token=str(token))
-                    if isinstance(q, dict):
-                        q_open = float(q.get("day_open") or q.get("open") or 0)
-                        q_high = float(q.get("day_high") or q.get("high") or 0)
-                        q_low  = float(q.get("day_low") or q.get("low") or 0)
-                        q_close = float(q.get("ltp") or q.get("last_price") or 0)
-                        q_vol = float(q.get("volume") or q.get("vol") or 0)
-                        if q_close and q_close > 0:
-                            today_norm = pd.to_datetime(today.date())
-                            today_str = today_norm.strftime("%Y-%m-%d")
-                            today_row = pd.DataFrame([{
-                                "DateTime": pd.to_datetime(datetime.now()),
-                                "Date": today_norm,
-                                "DateStr": today_str,
-                                "Open": q_open,
-                                "High": q_high,
-                                "Low": q_low,
-                                "Close": q_close,
-                                "Volume": q_vol
-                            }])
-                            # remove any existing today row and concat using pd.concat (no .append)
-                            df_hist = pd.concat([df_hist[df_hist["Date"] < today_norm], today_row], ignore_index=True)
-                except Exception:
-                    # ignore append failures for overall run
-                    pass
-
-            # enforce numeric types & drop invalid closes
-            for c in ["Open", "High", "Low", "Close", "Volume"]:
-                if c in df_hist.columns:
-                    df_hist[c] = pd.to_numeric(df_hist[c], errors="coerce")
-            df_hist = df_hist.dropna(subset=["Close"]).sort_values("Date").reset_index(drop=True)
-
-            # store CSV bytes
-            csv_bytes = df_hist.to_csv(index=False).encode("utf-8")
-            csv_map[sym] = csv_bytes
-
-            summary.append({
-                "symbol": sym,
-                "token": token,
-                "rows": len(df_hist),
-                "start": df_hist["Date"].min().strftime("%Y-%m-%d") if not df_hist.empty else None,
-                "end": df_hist["Date"].max().strftime("%Y-%m-%d") if not df_hist.empty else None,
-                "status": "OK"
-            })
+            # Save to CSV
+            csv_name = f"{index.replace(' ', '_')}.csv"
+            df_hist.to_csv(csv_name, index=False)
+            st.success(f"📂 Saved {csv_name}")
         except Exception as e:
-            summary.append({
-                "symbol": sym,
-                "token": token,
-                "rows": 0,
-                "start": None,
-                "end": None,
-                "status": f"ERROR: {e}"
-            })
-            st.error(f"Failed for {sym}: {e}")
-            if show_raw_hist:
-                st.text(traceback.format_exc())
+            st.error(f"⚠️ Error for {index}: {e}")
 
-        progress.progress(int(idx/total * 100))
-        time.sleep(rate_sleep)  # gentle rate limiting
+    # Example: Show NIFTY 50 last 5 rows
+    if "NIFTY 50" in all_data:
+        st.dataframe(all_data["NIFTY 50"].tail())
 
-    # summary
-    st.subheader("Fetch Summary")
-    summary_df = pd.DataFrame(summary)
-    st.dataframe(summary_df, use_container_width=True)
-
-    # build zip
-    if csv_map:
-        zip_buf = io.BytesIO()
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        zip_name = f"definedge_nse_{years_back}yrs_{stamp}.zip"
-        with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
-            for sym, b in csv_map.items():
-                fname = f"{sym}_historical.csv"
-                z.writestr(fname, b)
-        zip_buf.seek(0)
-        st.success(f"Prepared ZIP with {len(csv_map)} CSV files")
-        st.download_button("⬇️ Download ZIP (all symbols)", zip_buf.getvalue(), file_name=zip_name, mime="application/zip")
-
-        # individual CSV downloads
-        st.markdown("#### Individual CSV downloads")
-        for sym, b in csv_map.items():
-            st.download_button(f"Download {sym}.csv", b, file_name=f"{sym}_historical.csv", mime="text/csv")
-    else:
-        st.warning("No CSV files prepared (all failed).")
-
-    status.info("Done.")
+if __name__ == "__main__":
+    main()
