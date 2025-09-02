@@ -1,51 +1,66 @@
 import streamlit as st
 import pandas as pd
-import traceback
 
 # --- Helper functions ---
 
 def fetch_holdings(client):
     """Fetch holdings and return DataFrame."""
     resp = client.get_holdings()
+    st.write("Holdings raw response:", resp)  # Debug: Inspect raw response
     if resp.get("status") != "SUCCESS":
         return pd.DataFrame()
     raw_data = resp.get("data", [])
     records = []
     for h in raw_data:
         base = {k: v for k, v in h.items() if k != "tradingsymbol"}
-        for ts in h.get("tradingsymbol", []):
-            if ts.get("exchange") == "NSE":
-                records.append({**base, **ts})
-    return pd.DataFrame(records)
+        # Check if 'tradingsymbol' key exists
+        if "tradingsymbol" in h:
+            for ts in h.get("tradingsymbol", []):
+                if ts.get("exchange") == "NSE":
+                    records.append({**base, **ts})
+        else:
+            st.write("Warning: 'tradingsymbol' missing in data:", h)
+    df = pd.DataFrame(records)
+    st.write("Holdings DataFrame columns:", df.columns)
+    return df
 
 def fetch_positions(client):
     """Fetch positions and return DataFrame."""
     resp = client.get_positions()
+    st.write("Positions raw response:", resp)  # Debug
     if resp.get("status") != "SUCCESS":
         return pd.DataFrame()
     data = resp.get("data", [])
     records = []
     for pos in data:
         base = {k: v for k, v in pos.items() if k != "tradingsymbol"}
-        for ts in pos.get("tradingsymbol", []):
-            if ts.get("exchange") == "NSE":
-                records.append({**base, **ts})
-    return pd.DataFrame(records)
+        if "tradingsymbol" in pos:
+            for ts in pos.get("tradingsymbol", []):
+                if ts.get("exchange") == "NSE":
+                    records.append({**base, **ts})
+        else:
+            st.write("Warning: 'tradingsymbol' missing in position:", pos)
+    df = pd.DataFrame(records)
+    st.write("Positions DataFrame columns:", df.columns)
+    return df
 
 def fetch_gtt_oco_orders(client):
     """Fetch existing GTT/OCO orders."""
     resp = client.gtt_orders()
+    st.write("GTT/OCO raw response:", resp)  # Debug
     if not isinstance(resp, dict) or resp.get("status") != "SUCCESS":
         return pd.DataFrame()
     rows = resp.get("pendingGTTOrderBook") or []
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    st.write("Existing GTT/OCO orders columns:", df.columns)
+    return df
 
 def place_gtt_order(client, tradingsymbol):
-    """Open the GTT order placement form with pre-filled symbol."""
+    """Set session state to open GTT order form."""
     st.session_state['place_gtt'] = {'tradingsymbol': tradingsymbol}
 
 def place_oco_order(client, tradingsymbol):
-    """Open the OCO order placement form with pre-filled symbol."""
+    """Set session state to open OCO order form."""
     st.session_state['place_oco'] = {'tradingsymbol': tradingsymbol}
 
 # --- Main Streamlit app ---
@@ -62,15 +77,17 @@ holdings_df = fetch_holdings(client)
 positions_df = fetch_positions(client)
 gtt_oco_df = fetch_gtt_oco_orders(client)
 
-# Get list of all stocks in holdings and positions
-holdings_symbols = set(holdings_df['tradingsymbol'])
-positions_symbols = set(positions_df['tradingsymbol'])
+# Safely get tradingsymbol sets
+holdings_symbols = set(holdings_df['tradingsymbol']) if 'tradingsymbol' in holdings_df.columns else set()
+positions_symbols = set(positions_df['tradingsymbol']) if 'tradingsymbol' in positions_df.columns else set()
+
+# All symbols involved
 all_symbols = holdings_symbols | positions_symbols
 
-# Stocks with existing GTT/OCO orders
-existing_order_symbols = set(gtt_oco_df['tradingsymbol'])
+# Existing GTT/OCO orders
+existing_order_symbols = set(gtt_oco_df['tradingsymbol']) if 'tradingsymbol' in gtt_oco_df.columns else set()
 
-# Eligible stocks for new GTT/OCO
+# Eligible stocks
 eligible_symbols = [sym for sym in all_symbols if sym not in existing_order_symbols]
 
 st.subheader("Stocks eligible for new GTT/OCO orders")
@@ -163,5 +180,3 @@ if 'place_oco' in st.session_state:
                 st.error(f"Failed to place OCO order: {resp}")
         except Exception as e:
             st.error(f"Error: {e}")
-
-# --- End ---
