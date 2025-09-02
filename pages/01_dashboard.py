@@ -95,7 +95,7 @@ try:
 
     # ------------------ Function 2: Fetch Previous Close ------------------
     def fetch_prev_close(client, token, today_dt=None):
-        """Fetch robust previous close (prefer yesterday’s close, else last available)."""
+        """Fetch previous close (prefer yesterday’s close, else last available)."""
         if today_dt is None:
             today_dt = datetime.now()
         today_date = today_dt.date()
@@ -117,16 +117,14 @@ try:
                 else:
                     hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
 
-                # Robust datetime parsing
-                def try_parse(dt_str):
-                    for fmt in ("%d-%m-%Y %H:%M", "%d-%m-%Y", "%Y-%m-%d %H:%M:%S", "%d%m%Y%H%M", "%Y-%m-%d"):
-                        try:
-                            return pd.to_datetime(dt_str, format=fmt, dayfirst=True)
-                        except Exception:
-                            continue
-                    return pd.to_datetime(dt_str, dayfirst=True, errors='coerce')
+                # सीधे ddMMyyyyHHmm फॉर्मेट का उपयोग
+                def parse_date(dt_str):
+                    try:
+                        return pd.to_datetime(dt_str, format='%d%m%Y%H%M')
+                    except Exception:
+                        return pd.to_datetime(dt_str, errors='coerce')
 
-                hist_df["DateTime"] = hist_df["DateTime"].apply(try_parse)
+                hist_df["DateTime"] = hist_df["DateTime"].apply(parse_date)
                 hist_df = hist_df.dropna(subset=["DateTime"]).sort_values(by="DateTime")
                 hist_df["date_only"] = hist_df["DateTime"].dt.date
 
