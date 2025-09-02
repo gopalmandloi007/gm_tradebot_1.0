@@ -1,20 +1,20 @@
 # pages/historical_fetcher.py
 import streamlit as st
 import pandas as pd
-import numpy as np
 import io
 import os
 import zipfile
 import time
+import requests
 import traceback
 import re
 from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
-st.title("📥 Historical Data Fetcher — NSE (multi-symbol, 5 years)")
+st.title("📥 Historical Fetcher — Definedge (NSE multi-symbol, last N years)")
 
 # -------------------------
-# Robust CSV -> DataFrame reader (same safe parser used earlier)
+# Robust CSV -> DataFrame parser (handles many date formats including ddMMyyyyHHmm)
 # -------------------------
 def _clean_dt_str(s: pd.Series) -> pd.Series:
     sc = s.astype(str).str.strip()
@@ -36,7 +36,11 @@ def _looks_like_epoch_millis(val: str) -> bool:
     return bool(re.fullmatch(r'\d{13}', val))
 
 def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
-    """Robust parser for historical CSV text -> DataFrame with Date normalized per-day."""
+    """
+    Robust parser for Definedge historical CSV (no header or with header).
+    Returns DataFrame with columns: DateTime, Date, DateStr, Open, High, Low, Close, Volume (if available).
+    Dedupes per calendar day keeping the last intraday row.
+    """
     if not isinstance(hist_csv, str) or not hist_csv.strip():
         return pd.DataFrame()
 
@@ -49,6 +53,7 @@ def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
     header_indicators = ("date", "datetime", "open", "high", "low", "close", "volume", "oi", "timestamp")
     use_header = any(h in first_line for h in header_indicators)
 
+    # read CSV
     try:
         if use_header:
             df = pd.read_csv(io.StringIO(txt))
@@ -81,6 +86,7 @@ def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
                 col_map[c] = "OI"
         df = df.rename(columns=col_map)
     else:
+        # assume standard positions
         if df.shape[1] >= 6:
             if df.shape[1] == 7:
                 df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
@@ -92,8 +98,8 @@ def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
     if "DateTime" not in df.columns:
         return pd.DataFrame()
 
-    series_raw = df["DateTime"]
-    series = _clean_dt_str(series_raw)
+    # parse DateTime robustly
+    series = _clean_dt_str(df["DateTime"])
     dt = pd.Series([pd.NaT] * len(series), index=series.index, dtype="datetime64[ns]")
 
     sample = series.dropna()
@@ -104,14 +110,17 @@ def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
     n_ddmmhh = sample.apply(lambda v: _looks_like_ddmmyyyy_hhmm(v)).sum()
     n_ddmm = sample.apply(lambda v: _looks_like_ddmmyyyy(v)).sum()
 
+    # try ddMMyyyyHHmm first if many look like that
     if n_ddmmhh >= max(1, int(0.35 * n)):
         parsed = pd.to_datetime(series, format="%d%m%Y%H%M", errors="coerce")
         dt = dt.fillna(parsed)
 
+    # then ddMMyyyy
     if n_ddmm >= max(1, int(0.35 * n)):
         parsed = pd.to_datetime(series, format="%d%m%Y", errors="coerce")
         dt = dt.fillna(parsed)
 
+    # explicit formats
     if dt.isna().any():
         formats_to_try = [
             "%d-%m-%Y %H:%M", "%d-%m-%Y %H:%M:%S",
@@ -125,10 +134,12 @@ def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
             parsed = pd.to_datetime(series, format=fmt, dayfirst=True, errors="coerce")
             dt = dt.fillna(parsed)
 
+    # pandas infer
     if dt.isna().any():
         parsed = pd.to_datetime(series, dayfirst=True, infer_datetime_format=True, errors="coerce")
         dt = dt.fillna(parsed)
 
+    # epoch heuristics last
     if dt.isna().any():
         def try_epoch_parse(v):
             if not isinstance(v, str) or not v.isdigit():
@@ -141,6 +152,7 @@ def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
         parsed_epoch = series.apply(lambda v: try_epoch_parse(v))
         dt = dt.fillna(parsed_epoch)
 
+    # fallback
     if dt.isna().any():
         parsed = pd.to_datetime(series, infer_datetime_format=True, errors="coerce")
         dt = dt.fillna(parsed)
@@ -150,290 +162,264 @@ def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
 
+    # numeric conversion
     for col in ("Open", "High", "Low", "Close", "Volume", "OI"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
+    # Normalize to daily (calendar day) and keep last intraday record per day
     df["Date"] = df["DateTime"].dt.normalize()
     df = df.sort_values("DateTime").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
     df["DateStr"] = df["Date"].dt.strftime("%Y-%m-%d")
+
     cols_keep = [c for c in ["DateTime", "Date", "DateStr", "Open", "High", "Low", "Close", "Volume"] if c in df.columns]
     return df[cols_keep].copy()
 
 # -------------------------
-# Load master symbols (NSE-only)
+# Master download & loader
 # -------------------------
+MASTER_URLS = {
+    "NSE Cash (nsecash.zip)": "https://app.definedgesecurities.com/public/nsecash.zip",
+    "NSE FNO (nsefno.zip)": "https://app.definedgesecurities.com/public/nsefno.zip",
+    "All master (allmaster.zip)": "https://app.definedgesecurities.com/public/allmaster.zip"
+}
+
 @st.cache_data(show_spinner=False)
-def load_master(master_csv_path="data/master/allmaster.csv"):
-    # Attempt to read path, else return empty df
-    if os.path.exists(master_csv_path):
-        mdf = pd.read_csv(master_csv_path, dtype=str)
-    else:
-        return pd.DataFrame()
-    # Normalize column names to uppercase keys
-    mdf.columns = [c.strip() for c in mdf.columns]
-    colmap = {c: c for c in mdf.columns}
-    # common names
-    names_upper = {c.upper(): c for c in mdf.columns}
-    # expected columns might be TRADINGSYM, SEGMENT, TOKEN
-    # create canonical columns
-    def get_col(*candidates):
-        for cand in candidates:
-            if cand in names_upper:
-                return names_upper[cand]
+def download_and_load_master(url: str) -> pd.DataFrame:
+    """
+    Download master zip from Definedge public URL and return master DataFrame.
+    """
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+    z = zipfile.ZipFile(io.BytesIO(resp.content))
+    # find first .csv file inside
+    csv_names = [n for n in z.namelist() if n.lower().endswith(".csv")]
+    if not csv_names:
+        raise RuntimeError("No CSV found in master zip")
+    csv_name = csv_names[0]
+    raw = z.read(csv_name)
+    # read csv as text
+    df = pd.read_csv(io.BytesIO(raw), dtype=str, keep_default_na=False)
+    # normalize column names
+    df.columns = [c.strip() for c in df.columns]
+    # try to map required fields
+    cols = {c.upper(): c for c in df.columns}
+    def safe_col(*cands):
+        for c in cands:
+            if c.upper() in cols:
+                return cols[c.upper()]
         return None
-    trad_col = get_col("TRADINGSYM", "TRADINGSYMBOL", "TRADSYM", "SYMBOL", "tradingsym")
-    seg_col = get_col("SEGMENT", "segment")
-    token_col = get_col("TOKEN", "token")
-    # fallback: try lowercase equivalents
-    if trad_col is None:
-        candidates = [c for c in mdf.columns if "trad" in c.lower() or "symbol" in c.lower()]
-        trad_col = candidates[0] if candidates else mdf.columns[0]
-    if seg_col is None:
-        candidates = [c for c in mdf.columns if "seg" in c.lower()]
-        seg_col = candidates[0] if candidates else None
-    if token_col is None:
-        candidates = [c for c in mdf.columns if "token" in c.lower()]
-        token_col = candidates[0] if candidates else None
-
-    mdf = mdf.rename(columns={trad_col: "TRADINGSYM"})
+    trad_col = safe_col("TRADINGSYM", "TRADINGSYMBOL", "SYMBOL")
+    seg_col = safe_col("SEGMENT")
+    token_col = safe_col("TOKEN")
+    # Ensure canonical columns exist
+    if trad_col:
+        df = df.rename(columns={trad_col: "TRADINGSYM"})
+    else:
+        df["TRADINGSYM"] = ""
     if seg_col:
-        mdf = mdf.rename(columns={seg_col: "SEGMENT"})
+        df = df.rename(columns={seg_col: "SEGMENT"})
     else:
-        mdf["SEGMENT"] = "NSE"  # default if missing
+        df["SEGMENT"] = ""
     if token_col:
-        mdf = mdf.rename(columns={token_col: "TOKEN"})
+        df = df.rename(columns={token_col: "TOKEN"})
     else:
-        mdf["TOKEN"] = ""
-
-    mdf["TRADINGSYM"] = mdf["TRADINGSYM"].astype(str)
-    mdf["SEGMENT"] = mdf["SEGMENT"].astype(str)
-    mdf["TOKEN"] = mdf["TOKEN"].astype(str)
-    return mdf[["TRADINGSYM", "SEGMENT", "TOKEN"]]
-
-# -------------------------
-# Helper: get token by trading symbol
-# -------------------------
-def token_for_symbol(master_df, symbol):
-    row = master_df[master_df["TRADINGSYM"] == symbol]
-    if not row.empty:
-        return row.iloc[0]["TOKEN"]
-    return ""
-
-# -------------------------
-# Historical fetch wrapper using Definedge client
-# -------------------------
-def fetch_symbol_history(client, segment, token, days, timeframe="day", buffer_days=30, show_raw=False):
-    """
-    Calls client's historical_csv and returns parsed DataFrame (or empty DF).
-    - client: Definedge client (must have historical_csv(segment, token, timeframe, frm, to))
-    - days: how many most recent trading days to return
-    """
-    today = datetime.today()
-    frm = (today - timedelta(days=days + buffer_days)).strftime("%d%m%Y%H%M")
-    to = today.strftime("%d%m%Y%H%M")
-    try:
-        raw = client.historical_csv(segment=segment, token=token, timeframe=timeframe, frm=frm, to=to)
-    except Exception as e:
-        raise RuntimeError(f"historical_csv API error: {e}")
-
-    raw_text = str(raw) if raw is not None else ""
-    if show_raw:
-        st.text_area("Raw historical CSV (first 4000 chars)", raw_text[:4000], height=220)
-    df = read_hist_csv_to_df(raw_text)
-    if df.empty:
-        return pd.DataFrame()
-    # return last `days` calendar rows (most recent)
-    df = df.sort_values("Date").tail(days).reset_index(drop=True)
+        df["TOKEN"] = ""
+    # Keep minimal columns
+    df = df[["SEGMENT", "TOKEN", "TRADINGSYM"]].copy()
+    # normalize content
+    df["SEGMENT"] = df["SEGMENT"].astype(str).str.strip().str.upper()
+    df["TRADINGSYM"] = df["TRADINGSYM"].astype(str).str.strip()
+    df["TOKEN"] = df["TOKEN"].astype(str).str.strip()
     return df
 
 # -------------------------
-# UI inputs
+# Helper: token lookup
+# -------------------------
+def token_for_symbol(master_df: pd.DataFrame, symbol: str) -> str:
+    row = master_df[master_df["TRADINGSYM"] == symbol]
+    if not row.empty:
+        return str(row.iloc[0]["TOKEN"])
+    return ""
+
+# -------------------------
+# UI: controls
 # -------------------------
 client = st.session_state.get("client")
 if not client:
-    st.error("⚠️ Not logged in — go to the Login page and complete login first.")
+    st.error("⚠️ Please login first (Login page). The Definedge client must be in st.session_state['client'].")
     st.stop()
 
-master_df = load_master()
-if master_df.empty:
-    st.warning("Master file not found at `data/master/allmaster.csv`. Upload a master CSV (format: TRADINGSYM, SEGMENT, TOKEN).")
-    uploaded = st.file_uploader("Upload master CSV (optional)", type=["csv"])
-    if uploaded:
-        try:
-            mdf = pd.read_csv(uploaded, dtype=str)
-            # save temporarily to cache by writing to local path (not committed to git)
-            os.makedirs("data/master", exist_ok=True)
-            uploaded_path = "data/master/allmaster.csv"
-            mdf.to_csv(uploaded_path, index=False)
-            st.success("Master CSV uploaded and saved to data/master/allmaster.csv")
-            master_df = load_master()  # reload cached function
-        except Exception as e:
-            st.error(f"Failed to read uploaded CSV: {e}")
-            st.stop()
-    else:
+st.sidebar.header("Master & Fetch options")
+master_choice = st.sidebar.selectbox("Which master file to download", list(MASTER_URLS.keys()), index=0)
+years_back = st.sidebar.number_input("Years back (calendar years)", min_value=1, max_value=20, value=5)
+append_today = st.sidebar.checkbox("Append today's live quote (optional)", value=True)
+rate_sleep = st.sidebar.number_input("Seconds between API calls (rate-limit)", min_value=0.0, max_value=5.0, value=0.5, step=0.1)
+buffer_days = st.sidebar.number_input("Buffer days for historical request", min_value=10, max_value=120, value=40)
+show_raw_hist = st.sidebar.checkbox("Show raw historical CSV (debug)", value=False)
+
+# Download and show master
+with st.spinner("Downloading master..."):
+    try:
+        master_df = download_and_load_master(MASTER_URLS[master_choice])
+    except Exception as e:
+        st.error(f"Failed to download/load master: {e}")
         st.stop()
 
-# Filter NSE only
-nse_df = master_df[master_df["SEGMENT"].str.upper() == "NSE"].copy()
+nse_df = master_df[master_df["SEGMENT"] == "NSE"].copy()
 if nse_df.empty:
-    st.error("No NSE symbols found in master file.")
+    st.error("No NSE rows found in master. Choose a different master or upload your own master CSV.")
     st.stop()
 
-# symbol selector
-st.sidebar.header("Symbol selection (NSE only)")
-search = st.sidebar.text_input("Search symbol (substring)", value="")
+st.sidebar.markdown(f"🔹 NSE symbols in master: **{len(nse_df)}**")
+
+# symbol search & multiselect
+search = st.sidebar.text_input("Search symbols (substring filter)", value="")
 candidates = sorted(nse_df["TRADINGSYM"].unique())
 if search:
     candidates = [s for s in candidates if search.lower() in s.lower()]
 
-# default select: NIFTY 500 if present, else top 10
+# default selection logic: prefer NIFTY 500 symbol if present else top 20 samples
 default_selection = []
 for s in candidates:
     if "NIFTY" in s.upper() and "500" in s.upper():
-        default_selection = [s]
-        break
+        default_selection = [s]; break
 if not default_selection:
-    default_selection = candidates[:10]
+    default_selection = candidates[:20]  # first 20 by master order
 
-selected_symbols = st.sidebar.multiselect("Select symbols (multi)", options=candidates, default=default_selection)
-
-years = st.sidebar.number_input("Years back (history)", min_value=1, max_value=20, value=5, step=1)
-days_back = int(years * 365)  # approximate days
-timeframe = st.sidebar.selectbox("Timeframe", ["day"], index=0, help="Daily candles for long-term backtesting")
-append_today = st.sidebar.checkbox("Append today's live quote (optional)", value=True)
-rate_sleep = st.sidebar.number_input("Seconds between API calls (rate-limit)", min_value=0.0, max_value=5.0, value=0.5, step=0.1)
-show_raw = st.sidebar.checkbox("Show raw historical CSV (debug)", value=False)
+selected_symbols = st.sidebar.multiselect("Select NSE symbols to fetch", options=candidates, default=default_selection)
 
 if not selected_symbols:
-    st.info("Select one or more symbols from the sidebar to fetch historical data.")
+    st.info("Please select one or more symbols from the sidebar to fetch historical data.")
     st.stop()
 
-# Main action button
-if st.button("Fetch historical data & build ZIP"):
-    results = []
-    csv_buffers = {}
-    errors = {}
-    total = len(selected_symbols)
-    progress = st.progress(0)
-    status_text = st.empty()
-    start_time = datetime.now()
+# main action
+if st.button("⬇️ Fetch historical and prepare ZIP"):
+    years = int(years_back)
+    days_needed = int(years * 365)  # approximate
+    today = datetime.today()
+    start_date_cutoff = (today - timedelta(days=years * 365)).date()
 
+    progress = st.progress(0)
+    status = st.empty()
+    csv_map = {}
+    summary = []
+
+    total = len(selected_symbols)
     for idx, sym in enumerate(selected_symbols, start=1):
-        status_text.info(f"Processing ({idx}/{total}): {sym}")
+        status.info(f"Fetching ({idx}/{total}): {sym}")
         try:
             token = token_for_symbol(nse_df, sym)
-            if not token or str(token).strip() == "":
-                raise RuntimeError("Token missing for symbol in master file")
+            if not token:
+                raise RuntimeError("Token not found in master for symbol")
 
-            # fetch
-            df_hist = fetch_symbol_history(client, "NSE", token, days_back, timeframe=timeframe, buffer_days=40, show_raw=show_raw)
+            # build from/to with buffer
+            frm_dt = (today - timedelta(days=days_needed + int(buffer_days)))
+            frm = frm_dt.strftime("%d%m%Y%H%M")
+            to = today.strftime("%d%m%Y%H%M")
+
+            # call historical API
+            raw_csv = client.historical_csv(segment="NSE", token=str(token), timeframe="day", frm=frm, to=to)
+            if not raw_csv or not str(raw_csv).strip():
+                raise RuntimeError("Historical API returned empty for this token")
+
+            # optional debug show
+            if show_raw_hist:
+                st.text_area(f"Raw CSV for {sym} (first 4000 chars)", str(raw_csv)[:4000], height=180)
+
+            df_hist = read_hist_csv_to_df(str(raw_csv))
             if df_hist.empty:
-                raise RuntimeError("No historical rows returned / parse failed")
+                raise RuntimeError("Parsed historical CSV is empty or failed to parse")
 
-            # Optionally append today's quote (safe: only when LTP available)
+            # filter to cutoff (keep dates >= start_date_cutoff)
+            df_hist = df_hist[df_hist["Date"] >= pd.to_datetime(start_date_cutoff)].sort_values("Date").reset_index(drop=True)
+
+            # Optionally append today's live quote (safe: only if quote returns valid ltp)
             if append_today:
                 try:
-                    q = client.get_quotes(exchange="NSE", token=token)
+                    q = client.get_quotes(exchange="NSE", token=str(token))
                     if isinstance(q, dict):
-                        # many brokers return ltp as string in root
                         q_open = float(q.get("day_open") or q.get("open") or 0)
                         q_high = float(q.get("day_high") or q.get("high") or 0)
                         q_low  = float(q.get("day_low") or q.get("low") or 0)
                         q_close = float(q.get("ltp") or q.get("last_price") or 0)
                         q_vol = float(q.get("volume") or q.get("vol") or 0)
-                        today_norm = pd.to_datetime(datetime.today().date())
-                        today_str = today_norm.strftime("%Y-%m-%d")
-                        today_row = pd.DataFrame([{
-                            "DateTime": pd.to_datetime(datetime.now()),
-                            "Date": today_norm,
-                            "DateStr": today_str,
-                            "Open": q_open,
-                            "High": q_high,
-                            "Low": q_low,
-                            "Close": q_close,
-                            "Volume": q_vol
-                        }])
-                        # merge: drop existing today then concat
-                        df_hist = pd.concat([df_hist[df_hist["Date"] < today_norm], today_row], ignore_index=True)
+                        if q_close and q_close > 0:
+                            today_norm = pd.to_datetime(today.date())
+                            today_str = today_norm.strftime("%Y-%m-%d")
+                            today_row = pd.DataFrame([{
+                                "DateTime": pd.to_datetime(datetime.now()),
+                                "Date": today_norm,
+                                "DateStr": today_str,
+                                "Open": q_open,
+                                "High": q_high,
+                                "Low": q_low,
+                                "Close": q_close,
+                                "Volume": q_vol
+                            }])
+                            # remove existing today row then concat using pd.concat
+                            df_hist = pd.concat([df_hist[df_hist["Date"] < today_norm], today_row], ignore_index=True)
                 except Exception:
-                    # do not fail overall for quote append
+                    # ignore append failures for overall run
                     pass
 
-            # final clean: ensure Close numeric and sorted
-            for c in ["Open","High","Low","Close","Volume"]:
+            # final numeric enforcement & cleaning
+            for c in ["Open", "High", "Low", "Close", "Volume"]:
                 if c in df_hist.columns:
                     df_hist[c] = pd.to_numeric(df_hist[c], errors="coerce")
             df_hist = df_hist.dropna(subset=["Close"]).sort_values("Date").reset_index(drop=True)
 
-            # Keep only last (years*~252 trading days) but user asked for calendar days approximation; we keep what's returned
-            # Save CSV bytes in-memory
-            csv_buf = df_hist.to_csv(index=False).encode("utf-8")
-            csv_buffers[sym] = csv_buf
+            # store CSV bytes
+            csv_bytes = df_hist.to_csv(index=False).encode("utf-8")
+            csv_map[sym] = csv_bytes
 
-            results.append({
+            summary.append({
                 "symbol": sym,
+                "token": token,
                 "rows": len(df_hist),
-                "start_date": df_hist["Date"].min().strftime("%Y-%m-%d") if not df_hist.empty else None,
-                "end_date": df_hist["Date"].max().strftime("%Y-%m-%d") if not df_hist.empty else None,
+                "start": df_hist["Date"].min().strftime("%Y-%m-%d") if not df_hist.empty else None,
+                "end": df_hist["Date"].max().strftime("%Y-%m-%d") if not df_hist.empty else None,
                 "status": "OK"
             })
-
         except Exception as e:
-            errors[sym] = str(e)
-            results.append({
+            summary.append({
                 "symbol": sym,
+                "token": token if 'token' in locals() else None,
                 "rows": 0,
-                "start_date": None,
-                "end_date": None,
+                "start": None,
+                "end": None,
                 "status": f"ERROR: {e}"
             })
+            st.error(f"Failed for {sym}: {e}")
+            if show_raw_hist:
+                st.text(traceback.format_exc())
 
-        # progress sleep & update
         progress.progress(int(idx/total * 100))
-        time.sleep(rate_sleep)
+        time.sleep(rate_sleep)  # rate limit between calls
 
-    end_time = datetime.now()
-    status_text.success(f"Completed fetch — {len(results)} symbols in {round((end_time-start_time).total_seconds(),1)}s")
-
-    # Show summary table
-    summary_df = pd.DataFrame(results)
+    # summary
     st.subheader("Fetch Summary")
+    summary_df = pd.DataFrame(summary)
     st.dataframe(summary_df, use_container_width=True)
 
-    # Show errors if any
-    if errors:
-        st.error(f"{len(errors)} symbol(s) failed. See details below.")
-        for sym, msg in errors.items():
-            st.write(f"- {sym}: {msg}")
-
-    # Preview first successful symbol (if exists)
-    successful = [s for s in results if s.get("status") == "OK"]
-    if successful:
-        preview_sym = successful[0]["symbol"]
-        st.subheader(f"Preview: {preview_sym}")
-        st.dataframe(pd.read_csv(io.BytesIO(csv_buffers[preview_sym])), use_container_width=True)
-
-    # Build ZIP in-memory
-    if csv_buffers:
+    # build zip
+    if csv_map:
         zip_buf = io.BytesIO()
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_name = f"definedge_nse_{years_back}yrs_{stamp}.zip"
         with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
-            for sym, b in csv_buffers.items():
-                # file name safe: replace spaces/slashes
+            for sym, b in csv_map.items():
                 fname = f"{sym}_historical.csv"
                 z.writestr(fname, b)
         zip_buf.seek(0)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        zip_filename = f"historical_nse_{years}yrs_{stamp}.zip"
+        st.success(f"Prepared ZIP with {len(csv_map)} CSV files")
+        st.download_button("⬇️ Download ZIP (all symbols)", zip_buf.getvalue(), file_name=zip_name, mime="application/zip")
 
-        st.markdown("---")
-        st.success(f"Prepared ZIP with {len(csv_buffers)} CSV(s). Download below.")
-        st.download_button("⬇️ Download ZIP (all symbols)", zip_buf.getvalue(), file_name=zip_filename, mime="application/zip")
-
-        # Also provide individual CSV downloads
+        # also individual downloads
         st.markdown("#### Individual CSV downloads")
-        for sym, b in csv_buffers.items():
+        for sym, b in csv_map.items():
             st.download_button(f"Download {sym}.csv", b, file_name=f"{sym}_historical.csv", mime="text/csv")
     else:
-        st.warning("No CSVs prepared for download (all failed).")
+        st.warning("No CSV files prepared (all failed).")
 
+    status.info("Done.")
