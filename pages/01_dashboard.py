@@ -57,22 +57,55 @@ try:
 
     rows = []
     for item in holdings:
-        avg_buy_price = float(item.get("avg_buy_price") or 0)
-        dp_qty = float(item.get("dp_qty") or 0)
-        t1_qty = float(item.get("t1_qty") or 0)
-        holding_used = float(item.get("holding_used") or 0)
+        # Defensive parsing for numeric fields
+        try:
+            avg_buy_price = float(item.get("avg_buy_price") or 0)
+        except Exception:
+            avg_buy_price = 0.0
+        try:
+            dp_qty = float(item.get("dp_qty") or 0)
+        except Exception:
+            dp_qty = 0.0
+        try:
+            t1_qty = float(item.get("t1_qty") or 0)
+        except Exception:
+            t1_qty = 0.0
+        try:
+            holding_used = float(item.get("holding_used") or 0)
+        except Exception:
+            holding_used = 0.0
+
         total_qty = int(dp_qty + t1_qty + holding_used)
 
-        for sym in item.get("tradingsymbol", []):
-            if sym.get("exchange") != "NSE":
-                continue
+        # tradingsymbol structure may vary by broker: handle list/dict/string
+        tradings = item.get("tradingsymbol") or []
+        # if tradings is a dict/singleton (older APIs), normalize to list-of-dicts
+        if isinstance(tradings, dict):
+            tradings = [tradings]
+        if isinstance(tradings, str):
+            # token may be in item; fallback mapping
             rows.append({
-                "symbol": sym.get("tradingsymbol"),
-                "token": sym.get("token"),
+                "symbol": tradings,
+                "token": item.get("token"),
                 "avg_buy_price": avg_buy_price,
                 "quantity": total_qty,
                 "product_type": item.get("product_type", "")
             })
+        else:
+            for sym in tradings:
+                # sym might be dict-like with keys tradingsymbol & token
+                sym_obj = sym if isinstance(sym, dict) else {}
+                sym_exchange = sym_obj.get("exchange") if isinstance(sym_obj, dict) else None
+                # If exchange key not present, assume NSE or trust outer item fields
+                if sym_exchange and sym_exchange != "NSE":
+                    continue
+                rows.append({
+                    "symbol": sym_obj.get("tradingsymbol") or sym_obj.get("symbol") or item.get("tradingsymbol"),
+                    "token": sym_obj.get("token") or item.get("token"),
+                    "avg_buy_price": avg_buy_price,
+                    "quantity": total_qty,
+                    "product_type": item.get("product_type", "")
+                })
 
     if not rows:
         st.warning("⚠️ No NSE holdings found.")
@@ -80,159 +113,160 @@ try:
 
     df = pd.DataFrame(rows)
 
+    # Normalize and drop invalid rows quickly
+    df = df.dropna(subset=["symbol"]).reset_index(drop=True)
+
     # ------------------ Fetch LTP + robust prev_close per symbol ------------------
     st.info("Fetching live prices and previous close (robust logic).")
-ltp_list = []
-prev_close_list = []
+    ltp_list = []
+    prev_close_list = []
 
-today_dt = datetime.now()
-today_date = today_dt.date()
+    today_dt = datetime.now()
+    today_date = today_dt.date()
 
-# helper: try many common keys that APIs might use for prev close
-POSSIBLE_PREV_KEYS = [
-    "prev_close", "previous_close", "previousClose", "previousClosePrice", "prevClose",
-    "prevclose", "previousclose", "prev_close_price", "yesterdayClose", "previous_close_price"
-]
+    # helper: try many common keys that APIs might use for prev close
+    POSSIBLE_PREV_KEYS = [
+        "prev_close", "previous_close", "previousClose", "previousClosePrice", "prevClose",
+        "prevclose", "previousclose", "prev_close_price", "yesterdayClose", "previous_close_price",
+        "prev_close_val", "previous_close_val"
+    ]
 
-for idx, row in df.iterrows():
-    token = row.get("token")
-    # safe quote fetch (get LTP and maybe prev close if available)
-    prev_close_from_quote = None
-    try:
-        quote_resp = client.get_quotes(exchange="NSE", token=token)
-        if isinstance(quote_resp, dict):
-            ltp_val = quote_resp.get("ltp") or quote_resp.get("last_price") or quote_resp.get("lastTradedPrice") or quote_resp.get("lastPrice")
-            # try to extract prev close from common keys
-            for k in POSSIBLE_PREV_KEYS:
-                if k in quote_resp and quote_resp.get(k) not in (None, "", []):
-                    try:
-                        prev_close_from_quote = float(quote_resp.get(k))
-                        break
-                    except Exception:
-                        # might be string - try numeric cast later
+    last_hist_df = None  # keep last parsed hist_df for sample display (optional)
+
+    for idx, row in df.iterrows():
+        token = row.get("token")
+        symbol = row.get("symbol")
+        # safe quote fetch (get LTP and maybe prev close if available)
+        prev_close_from_quote = None
+        try:
+            quote_resp = client.get_quotes(exchange="NSE", token=token)
+            if isinstance(quote_resp, dict):
+                ltp_val = (quote_resp.get("ltp") or quote_resp.get("last_price") or
+                           quote_resp.get("lastTradedPrice") or quote_resp.get("lastPrice") or quote_resp.get("ltpPrice"))
+                # try to extract prev close from common keys
+                for k in POSSIBLE_PREV_KEYS:
+                    if k in quote_resp and quote_resp.get(k) not in (None, "", []):
                         try:
-                            prev_close_from_quote = float(str(quote_resp.get(k)).replace(",", ""))
+                            prev_close_from_quote = float(quote_resp.get(k))
                             break
                         except Exception:
-                            prev_close_from_quote = None
-            # ltp safe-cast
-            try:
-                ltp = float(ltp_val or 0.0)
-            except Exception:
+                            try:
+                                prev_close_from_quote = float(str(quote_resp.get(k)).replace(",", ""))
+                                break
+                            except Exception:
+                                prev_close_from_quote = None
+                # ltp safe-cast
+                try:
+                    ltp = float(ltp_val or 0.0)
+                except Exception:
+                    ltp = 0.0
+            else:
                 ltp = 0.0
-        else:
+                prev_close_from_quote = None
+        except Exception:
             ltp = 0.0
             prev_close_from_quote = None
-    except Exception:
-        ltp = 0.0
-        prev_close_from_quote = None
 
-    ltp_list.append(ltp)
+        ltp_list.append(ltp)
 
-    # Initialize prev_close (prefer quote value)
-    prev_close = prev_close_from_quote if prev_close_from_quote is not None else ltp
+        # Initialize prev_close (prefer quote value)
+        prev_close = prev_close_from_quote if prev_close_from_quote is not None else ltp
 
-    # If quote didn't provide prev close, fallback to historical CSV robustly
-    if prev_close_from_quote is None:
-        try:
-            # prepare from/to for API (your existing format)
-            from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
-            to_date = today_dt.strftime("%d%m%Y%H%M")
-            hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_date, to=to_date)
+        # If quote didn't provide prev close, fallback to historical CSV robustly
+        if prev_close_from_quote is None:
+            try:
+                # prepare from/to for API (30 days)
+                from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
+                to_date = today_dt.strftime("%d%m%Y%H%M")
+                hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_date, to=to_date)
 
-            # normalize hist_csv to string
-            if isinstance(hist_csv, bytes):
-                s = hist_csv.decode("utf-8", errors="ignore")
-            else:
-                s = str(hist_csv)
+                # normalize hist_csv to string
+                if isinstance(hist_csv, bytes):
+                    s = hist_csv.decode("utf-8", errors="ignore")
+                else:
+                    s = str(hist_csv)
 
-            if not s.strip():
-                raise ValueError("Empty historical CSV")
+                if not s.strip():
+                    raise ValueError("Empty historical CSV")
 
-            # Detect header line: if first line contains words like Date/Open/Close, read header=0
-            first_line = s.strip().splitlines()[0].lower()
-            header_like = any(x in first_line for x in ["date", "datetime", "time", "open", "close", "volume"])
-            if header_like:
-                hist_df = pd.read_csv(io.StringIO(s), header=0)
-            else:
-                hist_df = pd.read_csv(io.StringIO(s), header=None)
+                # Detect header-like first line (contains date/open/close etc)
+                first_line = s.strip().splitlines()[0].lower()
+                header_like = any(x in first_line for x in ["date", "datetime", "time", "open", "close", "volume"])
 
-            # If header existed but with different column names, try to standardize
-            # Find the column that looks like the datetime column (try first 3 columns)
-            date_col = None
-            for col in hist_df.columns[:3]:
-                try:
-                    # try parsing the first non-null value
-                    sample_val = hist_df[col].dropna().iloc[0]
-                    _ = pd.to_datetime(sample_val, dayfirst=True, errors="raise")
-                    date_col = col
-                    break
-                except Exception:
-                    continue
-            if date_col is None:
-                # fallback to first column
-                date_col = hist_df.columns[0]
+                if header_like:
+                    hist_df = pd.read_csv(io.StringIO(s), header=0)
+                else:
+                    hist_df = pd.read_csv(io.StringIO(s), header=None)
 
-            # rename date column to DateTime for consistency
-            hist_df = hist_df.rename(columns={date_col: "DateTime"})
+                # If the CSV has few columns but no headers, try to assign sensible names later
+                # Find the column that looks like the datetime column (try first 3 columns)
+                date_col = None
+                for col in hist_df.columns[:3]:
+                    try:
+                        sample_val = hist_df[col].dropna().iloc[0]
+                        _ = pd.to_datetime(sample_val, dayfirst=True, errors="raise")
+                        date_col = col
+                        break
+                    except Exception:
+                        continue
+                if date_col is None:
+                    date_col = hist_df.columns[0]
 
-            # If Close column doesn't exist by name, assign based on shape (common formats)
-            if "Close" not in hist_df.columns and hist_df.shape[1] >= 5:
-                # assume order: DateTime, Open, High, Low, Close, Volume, (OI)
-                expected = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
-                # shrink/expand to match actual columns
-                cols_to_apply = expected[:hist_df.shape[1]]
-                hist_df.columns = cols_to_apply
+                # rename date column to DateTime for consistency
+                hist_df = hist_df.rename(columns={date_col: "DateTime"})
 
-            # parse DateTime robustly (try several formats, then fallback to pandas parser)
-            def parse_dt_series(srs):
-                # try to parse with pandas, letting it infer formats (dayfirst)
-                return pd.to_datetime(srs, dayfirst=True, errors="coerce")
+                # If Close column doesn't exist by name, assign based on shape (common formats)
+                if "Close" not in hist_df.columns and hist_df.shape[1] >= 5:
+                    expected = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
+                    cols_to_apply = expected[:hist_df.shape[1]]
+                    hist_df.columns = cols_to_apply
 
-            hist_df["DateTime"] = parse_dt_series(hist_df["DateTime"])
-            hist_df = hist_df.dropna(subset=["DateTime"])
-            if hist_df.empty:
-                raise ValueError("No valid datetimes in historical CSV")
+                # parse DateTime robustly (let pandas infer)
+                hist_df["DateTime"] = pd.to_datetime(hist_df["DateTime"], dayfirst=True, errors="coerce")
+                hist_df = hist_df.dropna(subset=["DateTime"])
+                if hist_df.empty:
+                    raise ValueError("No valid datetimes in historical CSV")
 
-            # create date_only column (this avoids time-of-day / tz issues)
-            hist_df["date_only"] = hist_df["DateTime"].dt.date
+                # create date_only column (avoid time-of-day / tz issues)
+                hist_df["date_only"] = hist_df["DateTime"].dt.date
 
-            # get most recent trading date strictly before today (so 'previous trading day')
-            available_dates = sorted(hist_df["date_only"].unique())
-            prev_dates = [d for d in available_dates if d < today_date]
-            if prev_dates:
-                prev_trading_date = prev_dates[-1]  # nearest prior trading day (yesterday usually)
-                prev_rows = hist_df[hist_df["date_only"] == prev_trading_date]
-                # use the last row for that date (in case of intraday multiple rows)
-                prev_close_val = prev_rows.iloc[-1].get("Close")
-                prev_close = float(prev_close_val)
-            else:
-                # no date < today found: use latest available close in file (best-effort)
-                prev_close = float(hist_df.iloc[-1]["Close"])
-        except Exception as exc:
-            # on any parse error, fallback to LTP (already assigned)
-            # optionally log for debugging
-            # st.write(f"Warn: prev_close fetch failed for token {token}: {exc}")
-            prev_close = prev_close if prev_close is not None else ltp
+                # get most recent trading date strictly before today (previous trading day)
+                available_dates = sorted(hist_df["date_only"].unique())
+                prev_dates = [d for d in available_dates if d < today_date]
+                if prev_dates:
+                    prev_trading_date = prev_dates[-1]  # nearest prior trading day
+                    prev_rows = hist_df[hist_df["date_only"] == prev_trading_date]
+                    prev_close_val = prev_rows.iloc[-1].get("Close")
+                    prev_close = float(prev_close_val)
+                else:
+                    # no date < today found: use latest available close in file (best-effort)
+                    prev_close = float(hist_df.iloc[-1]["Close"])
 
-    prev_close_list.append(prev_close)
+                # store last hist_df for optional display later
+                last_hist_df = hist_df.copy()
+            except Exception as exc:
+                # on any parse error, fallback to LTP (already assigned)
+                # Optionally log a small debug message
+                # st.write(f"Warn: prev_close fetch failed for token {token}: {exc}")
+                prev_close = prev_close if prev_close is not None else ltp
 
-# attach to df
-df["ltp"] = ltp_list
-df["prev_close"] = prev_close_list
+        prev_close_list.append(prev_close)
 
-# ------------------ Final historical sample display ------------------
+    # attach to df
+    df["ltp"] = ltp_list
+    df["prev_close"] = prev_close_list
+
+except Exception as e:
+    st.error(f"⚠️ Error fetching holdings or prices: {e}")
+    st.text(traceback.format_exc())
+    st.stop()
+
+# ------------------ Final historical sample display (optional) ------------------
 try:
-    if hist_df.shape[1] >= 6:
-        # Parse DateTime explicitly
-        hist_df["DateTime"] = pd.to_datetime(hist_df[0])  # first column
-        # Set column names
-        if hist_df.shape[1] == 8:
-            hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI", "date_str"]
-        else:
-            hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
-        # Show sample
-        st.write("Historical data sample:", hist_df.head())
+    if 'last_hist_df' in locals() and last_hist_df is not None and last_hist_df.shape[1] >= 5:
+        sample = last_hist_df.head()
+        st.write("Historical data sample (last fetched symbol):")
+        st.dataframe(sample)
 except Exception:
     pass
 
@@ -400,7 +434,7 @@ st.plotly_chart(fig, use_container_width=True)
 st.subheader("⚠️ Risk Exposure by Position (Initial Risk % of Capital)")
 risk_df = df[["symbol", "initial_risk"]].copy()
 risk_df["initial_risk_pct_of_capital"] = (risk_df["initial_risk"] / capital) * 100
-fig2 = go.Figure(data=[go.Bar(x=risk_df["symbol"], y=risk_df["initial_risk_pct_of_capital"])])
+fig2 = go.Figure(data=[go.Bar(x=risk_df["symbol"], y=risk_df["initial_risk_pct_of_capital"])] )
 fig2.update_layout(yaxis_title="% of Capital", xaxis_title="Symbol")
 st.plotly_chart(fig2, use_container_width=True)
 
