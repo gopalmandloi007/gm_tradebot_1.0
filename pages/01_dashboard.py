@@ -101,9 +101,9 @@ try:
         today_date = today_dt.date()
 
         try:
-            from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
-            to_date = today_dt.strftime("%d%m%Y%H%M")
-            hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_date, to=to_date)
+            from_time = f"{date_str}0000"
+            to_time = f"{date_str}1530"
+            hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_time, to=to_time)
 
             if not isinstance(hist_csv, str):
                 hist_csv = str(hist_csv)
