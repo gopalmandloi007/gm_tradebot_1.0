@@ -104,24 +104,27 @@ try:
 
         # Initialize prev_close with current ltp as fallback
         prev_close = ltp
+
+        # Fetch historical data CSV
         try:
             from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
             to_date = today_dt.strftime("%d%m%Y%H%M")
             hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_date, to=to_date)
 
-            # some brokers return CSV bytes or string; handle both
+            # handle bytes or string
             if not isinstance(hist_csv, str):
                 hist_csv = str(hist_csv)
 
             hist_df = pd.read_csv(io.StringIO(hist_csv), header=None)
-            # dynamic columns
+
+            # Assign columns dynamically
             if hist_df.shape[1] >= 6:
                 if hist_df.shape[1] == 7:
                     hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
                 else:
                     hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
 
-                # try multiple date formats
+                # Parse DateTime explicitly with multiple formats
                 def try_parse(dt_str):
                     for fmt in ("%d-%m-%Y %H:%M", "%d-%m-%Y", "%Y-%m-%d %H:%M:%S", "%d%m%Y%H%M", "%Y-%m-%d"): 
                         try:
@@ -135,20 +138,17 @@ try:
                 hist_df = hist_df.dropna(subset=["DateTime"]).sort_values(by="DateTime")
                 hist_df["date_only"] = hist_df["DateTime"].dt.date
 
-                # Determine yesterday's date
-                yesterday_date = today_date - timedelta(days=1)
+                # Define start of today as timestamp
+                start_of_today = pd.Timestamp(datetime.combine(today_date, datetime.min.time()))
 
-                # Try to get data for yesterday
-                hist_df["DateTime"] = pd.to_datetime(hist_df.iloc[:, 0])
+                # Filter for data before today
+                previous_data = hist_df[hist_df["DateTime"] < start_of_today]
 
-start_of_today = pd.Timestamp(datetime.combine(today_date, datetime.min.time()))
-
-previous_data = hist_df[hist_df["DateTime"] < start_of_today]
-
-if not previous_data.empty:
-    prev_close = float(previous_data.iloc[-1]["Close"])
-else:
-    prev_close = float(hist_df.iloc[-1]["Close"])
+                if not previous_data.empty:
+                    prev_close = float(previous_data.iloc[-1]["Close"])
+                else:
+                    # fallback: latest available data
+                    prev_close = float(hist_df.iloc[-1]["Close"])
             else:
                 prev_close = ltp
         except Exception:
@@ -163,37 +163,29 @@ except Exception as e:
     st.error(f"⚠️ Error fetching data: {e}")
     st.stop()
 
+# ------------------ Final historical sample display ------------------
 try:
     if hist_df.shape[1] >= 6:
         # Parse DateTime explicitly
-        hist_df["DateTime"] = pd.to_datetime(hist_df[0])  # first column is date
-        # Ensure DataFrame columns are named meaningfully
+        hist_df["DateTime"] = pd.to_datetime(hist_df[0])  # first column
+        # Set column names
         if hist_df.shape[1] == 8:
             hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI", "date_str"]
         else:
             hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
-        # Filter for data before today
-        previous_days = hist_df[hist_df["DateTime"] < pd.Timestamp(today_date)]
-        if not previous_days.empty:
-            prev_close = float(previous_days.iloc[-1]["Close"])
-        else:
-            # fallback: most recent available data
-            prev_close = float(hist_df.iloc[-1]["Close"])
-    else:
-        prev_close = ltp
+        # Show sample
+        st.write("Historical data sample:", hist_df.head())
 except Exception:
-    prev_close = ltp
-st.write("Historical data sample:", hist_df.head())
+    pass
 
 # ------------------ Calculate P&L and other metrics ------------------
-# All these calculations should be **outside** the loop that fetches prices
 df["invested_value"] = df["avg_buy_price"] * df["quantity"]
 df["current_value"] = df["ltp"] * df["quantity"]
 df["today_pnl"] = (df["ltp"] - df["prev_close"]) * df["quantity"]
 df["overall_pnl"] = df["current_value"] - df["invested_value"]
 df["capital_allocation_%"] = (df["invested_value"] / capital) * 100
 
-# ------------------ Define calc_stops_targets function ------------------
+# ------------------ Function to calculate stops and targets ------------------
 def calc_stops_targets(row):
     avg = float(row.get("avg_buy_price") or 0.0)
     qty = int(row.get("quantity") or 0)
@@ -215,26 +207,20 @@ def calc_stops_targets(row):
     if side == "LONG":
         initial_sl_price = round(avg * (1 - initial_sl_pct), 4)
         targets = [round(avg * (1 + t), 4) for t in target_pcts]
-
-        # percent movement from avg to LTP
         perc = (ltp / avg - 1) if avg > 0 else 0.0
 
-        # find highest threshold crossed
         crossed_indices = [i for i, th in enumerate(trailing_thresholds) if perc >= th]
         if crossed_indices:
             idx_max = max(crossed_indices)
-            # mapping: if idx_max == 0 => tsl_pct = 0 (breakeven)
             tsl_pct = 0.0 if idx_max == 0 else trailing_thresholds[idx_max - 1]
             tsl_price = round(avg * (1 + tsl_pct), 4)
         else:
             tsl_price = initial_sl_price
 
-        # ensure TSL never below initial SL
         tsl_price = max(tsl_price, initial_sl_price)
 
         open_risk = round(max(0.0, (avg - tsl_price) * qty), 2)
         initial_risk = round(max(0.0, (avg - initial_sl_price) * qty), 2)
-
         realized_if_tsl_hit = round((tsl_price - avg) * qty, 2)
 
         return {
@@ -246,14 +232,12 @@ def calc_stops_targets(row):
             "open_risk": open_risk,
             "realized_if_tsl_hit": realized_if_tsl_hit
         }
-
     else:  # SHORT
         avg_abs = abs(avg)
         initial_sl_price = round(avg_abs * (1 + initial_sl_pct), 4)
         targets = [round(avg_abs * (1 - t), 4) for t in target_pcts]
-
-        # percent movement in favour of short = (avg - ltp)/avg
         perc = ((avg_abs - ltp) / avg_abs) if avg_abs > 0 else 0.0
+
         crossed_indices = [i for i, th in enumerate(trailing_thresholds) if perc >= th]
         if crossed_indices:
             idx_max = max(crossed_indices)
@@ -262,7 +246,6 @@ def calc_stops_targets(row):
         else:
             tsl_price = initial_sl_price
 
-        # for short open risk is (tsl - avg) * abs(qty)
         open_risk = round(max(0.0, (tsl_price - avg_abs) * abs(qty)), 2)
         initial_risk = round(max(0.0, (initial_sl_price - avg_abs) * abs(qty)), 2)
         realized_if_tsl_hit = round((avg_abs - tsl_price) * abs(qty), 2)
@@ -277,7 +260,7 @@ def calc_stops_targets(row):
             "realized_if_tsl_hit": realized_if_tsl_hit
         }
 
-# ------------------ Apply stop/target calculations ------------------
+# ------------------ Apply stops and targets ------------------
 results = df.apply(calc_stops_targets, axis=1, result_type="expand")
 df = pd.concat([df, results], axis=1)
 
@@ -286,7 +269,7 @@ for i, tp in enumerate(target_pcts, start=1):
     df[f"target_{i}_pct"] = tp * 100
     df[f"target_{i}_price"] = df["targets"].apply(lambda lst: round(lst[i-1], 4) if isinstance(lst, list) and len(lst) >= i else 0.0)
 
-# ------------------ Portfolio metrics ------------------
+# ------------------ Portfolio Metrics ------------------
 total_invested = df["invested_value"].sum()
 total_current = df["current_value"].sum()
 total_overall_pnl = df["overall_pnl"].sum()
@@ -304,7 +287,7 @@ k3.metric("Overall Unrealized PnL", f"₹{total_overall_pnl:,.2f}")
 k4.metric("Today PnL", f"₹{total_today_pnl:,.2f}")
 k5.metric("Total Open Risk (TSL)", f"₹{total_open_risk:,.2f}")
 
-# ------------------ Intelligent Messaging about Open Risk / Breakeven ------------------
+# ------------------ Messaging about open risk ------------------
 total_positions = len(df)
 breakeven_count = int((df["open_risk"] == 0).sum())
 profitable_by_ltp = int((df["ltp"] > df["avg_buy_price"]).sum())
@@ -313,12 +296,11 @@ if breakeven_count == total_positions:
     st.success(f"✅ All {total_positions} positions have TSL >= AvgBuy (no open risk). {profitable_by_ltp} of them currently show unrealized profit by LTP.")
 else:
     st.info(f"ℹ️ {breakeven_count}/{total_positions} positions have no open risk (TSL >= AvgBuy). {profitable_by_ltp} positions currently showing unrealized profit by LTP.")
-    # show top few that still have open risk
     risky = df[df["open_risk"] > 0].sort_values(by="open_risk", ascending=False).head(10)
     if not risky.empty:
         st.table(risky[["symbol", "quantity", "avg_buy_price", "ltp", "tsl_price", "open_risk"]])
 
-# ------------------ If ALL TSL are hit: compute realized PnL scenario ------------------
+# ------------------ Scenario analysis ------------------
 st.subheader("🔮 Scenario: If ALL TSL get hit (immediate exit at current TSL)")
 st.write("This assumes each position is closed at its calculated TSL price. For LONGs, PnL = (TSL - AvgBuy) * Qty. For SHORTs, PnL = (AvgBuy - TSL) * Qty.")
 
@@ -327,7 +309,7 @@ delta_vs_unrealized = total_realized_if_all_tsl - total_overall_pnl
 st.metric("Delta vs Current Unrealized PnL", f"₹{delta_vs_unrealized:,.2f}")
 st.write(f"That is {total_realized_if_all_tsl/capital*100:.2f}% of your total capital.")
 
-# show breakdown of winners/losers under the scenario
+# Breakdown of winners/losers
 df["realized_if_tsl_sign"] = df["realized_if_tsl_hit"].apply(lambda x: "profit" if x > 0 else ("loss" if x < 0 else "breakeven"))
 winners = df[df["realized_if_tsl_hit"] > 0]
 losers = df[df["realized_if_tsl_hit"] < 0]
@@ -342,7 +324,6 @@ if not losers.empty:
 # ------------------ Positions & Risk Table ------------------
 display_cols = ["symbol", "quantity", "side", "avg_buy_price", "ltp", "prev_close", "invested_value", "current_value", "overall_pnl", "today_pnl",
                 "capital_allocation_%", "initial_sl_price", "tsl_price", "initial_risk", "open_risk", "realized_if_tsl_hit"]
-# add target columns
 for i in range(1, len(target_pcts) + 1):
     display_cols += [f"target_{i}_pct", f"target_{i}_price"]
 
