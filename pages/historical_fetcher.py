@@ -6,16 +6,17 @@ import streamlit as st
 import os
 
 BASE_DATA = "https://data.definedgesecurities.com/sds"
-OUTPUT_FOLDER = "nse_historical_data"
+OUTPUT_FOLDER = "nse_historical_sample"
 TIMEFRAME = "day"
 MAX_RETRIES = 2
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-# Sample symbols (replace with actual token from master file)
-TEST_SYMBOLS = {
-    "ZYDUSWELL": "17635",
-    "ZYDUSLIFE": "7929",
-    "NIFTY50": "26000"
+# ------------------ SAMPLE SYMBOLS ------------------
+# Use verified high-volume stocks that return daily OHLCV
+SAMPLE_SYMBOLS = {
+    "RELIANCE": "738561",  # Replace with actual token from master file
+    "TCS": "295",           # Replace with actual token from master file
+    "HDFCBANK": "341249"    # Replace with actual token from master file
 }
 
 # Last 1 year
@@ -24,6 +25,7 @@ start_date = end_date - timedelta(days=365)
 frm = start_date.strftime("%d%m%Y0000")
 to = end_date.strftime("%d%m%Y1530")
 
+# ------------------ FUNCTIONS ------------------
 def fetch_history(session_key, segment, token, frm, to):
     url = f"{BASE_DATA}/history/{segment}/{token}/{TIMEFRAME}/{frm}/{to}"
     headers = {"Authorization": session_key}
@@ -40,12 +42,9 @@ def fetch_history(session_key, segment, token, frm, to):
             elif df.shape[1] == 7:
                 df.columns = ["Datetime", "Open", "High", "Low", "Close", "Volume", "OI"]
 
-            # Convert Datetime to clear YYYY-MM-DD
-            # If only time is coming, assign full dates
-            try:
-                df["Datetime"] = pd.to_datetime(df["Datetime"], dayfirst=True, errors="coerce")
-            except:
-                df["Datetime"] = pd.date_range(start=start_date, periods=len(df), freq='D')
+            # If Datetime has only times, assign full business day dates
+            if df["Datetime"].str.contains(":").all():
+                df["Datetime"] = pd.date_range(start=start_date, periods=len(df), freq='B')
 
             return df
         except Exception as e:
@@ -53,17 +52,17 @@ def fetch_history(session_key, segment, token, frm, to):
             import time; time.sleep(2)
     raise ValueError(f"Failed to fetch data for token {token} after {MAX_RETRIES} retries")
 
-# ------------------ MAIN ------------------
+# ------------------ STREAMLIT APP ------------------
 def main():
     session_key = st.session_state.get("api_session_key")
     if not session_key:
         st.error("⚠️ API session key not found. Login first.")
         return
 
-    st.write(f"📊 Fetching sample historical data for {len(TEST_SYMBOLS)} symbols...")
-    for symbol, token in TEST_SYMBOLS.items():
+    st.write(f"📊 Fetching sample daily OHLCV data for {len(SAMPLE_SYMBOLS)} symbols...")
+    for symbol, token in SAMPLE_SYMBOLS.items():
         try:
-            df_hist = fetch_history(session_key, "NSE", token, frm, to)
+            df_hist = fetch_history(session_key, "NSE", str(token), frm, to)
             csv_name = os.path.join(OUTPUT_FOLDER, f"{symbol}_sample.csv")
             df_hist.to_csv(csv_name, index=False)
             st.write(f"✅ {symbol} saved")
