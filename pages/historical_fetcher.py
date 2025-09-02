@@ -27,10 +27,13 @@ def clean_hist_csv(hist_csv: str) -> pd.DataFrame:
     df["Date"] = df["DateTime"].dt.date
     return df
 
-# ------------------------- Reindex to full calendar -------------------------
+# ------------------------- Reindex to full calendar (deduplicate first) -------------------------
 def reindex_calendar(df: pd.DataFrame):
     if df.empty:
         return df
+    # Deduplicate by day (keep last intraday row)
+    df = df.sort_values("DateTime").drop_duplicates(subset=["Date"], keep="last")
+    # Full calendar index
     full_idx = pd.date_range(df["Date"].min(), df["Date"].max(), freq="D")
     df = df.set_index("Date").reindex(full_idx).rename_axis("Date").reset_index()
     return df
