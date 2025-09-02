@@ -197,6 +197,7 @@ try:
 except Exception:
     # fallback in case of errors
     prev_close = ltp
+st.write("Historical data sample:", hist_df.head())
 
 # ------------------ Calculate P&L and other metrics ------------------
 # All these calculations should be **outside** the loop that fetches prices
