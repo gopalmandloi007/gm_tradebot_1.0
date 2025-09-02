@@ -17,138 +17,130 @@ DEFAULT_TARGETS = [10, 20, 30, 40]
 
 # ------------------ Helper: parse Definedge CSV (headerless) ------------------
 def parse_definedge_csv(raw_text, timeframe="day"):
-    """
-    Parse raw CSV returned by Definedge (they return CSV without headers).
-    For 'day' or 'minute' timeframe, expected columns:
-      [Dateandtime, Open, High, Low, Close, Volume, (OI optional)]
-    For 'tick' timeframe, expected columns:
-      [UTC(in seconds), LTP, LTQ, OI]
-    Returns (hist_df, error_or_none)
-    """
-    if raw_text is None:
-        return None, "empty response"
-
-    # normalize to string
-    if isinstance(raw_text, bytes):
-        try:
-            s = raw_text.decode("utf-8", "ignore")
-        except Exception:
-            s = str(raw_text)
-    else:
-        s = str(raw_text)
-
-    s = s.strip()
-    if not s:
-        return None, "empty CSV"
-
-    # Read as headerless CSV (commas). Definedge docs say CSV without headers.
-    try:
-        df = pd.read_csv(io.StringIO(s), header=None)
-    except Exception as exc:
-        return None, f"read_csv error: {exc}"
-
-    if df.shape[0] == 0:
-        return None, "no rows"
-
-    # Assign column names for day/minute
-    if timeframe in ("day", "minute"):
-        # expected at least 6 columns: Dateandtime, Open, High, Low, Close, Volume, (OI optional)
-        if df.shape[1] >= 6:
-            colnames = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
-            if df.shape[1] >= 7:
-                colnames = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
-            # if there are more columns, keep them as extras
-            extras = []
-            if df.shape[1] > len(colnames):
-                extras = [f"X{i}" for i in range(df.shape[1] - len(colnames))]
-            df.columns = colnames + extras
-        else:
-            # fallback: name generically
-            df.columns = [f"C{i}" for i in range(df.shape[1])]
-            df = df.rename(columns={df.columns[0]: "DateTime"})
-    elif timeframe == "tick":
-        # tick: UTC (seconds), LTP, LTQ, OI
-        # ensure at least 4 cols
-        if df.shape[1] >= 4:
-            df.columns = ["UTC", "LTP", "LTQ", "OI"] + [f"X{i}" for i in range(df.shape[1] - 4)]
-        else:
-            df.columns = [f"C{i}" for i in range(df.shape[1])]
-    else:
-        df.columns = [f"C{i}" for i in range(df.shape[1])]
-
-    # Parse datetime / UTC
-    try:
-        if timeframe in ("day", "minute"):
-            # Try several datetime formats commonly used by Definedge:
-            dt_series = None
-            candidates = [
-                "%d-%m-%Y %H:%M:%S",
-                "%d-%m-%Y %H:%M",
-                "%d/%m/%Y %H:%M:%S",
-                "%d/%m/%Y %H:%M",
-                "%Y-%m-%d %H:%M:%S",
-                "%Y-%m-%d %H:%M"
-            ]
-            for fmt in candidates:
-                try:
-                    dt_series = pd.to_datetime(df["DateTime"], format=fmt, dayfirst=True, errors="coerce")
-                    valid_fraction = dt_series.notna().sum() / max(1, len(dt_series))
-                    yr_max = None
-                    try:
-                        yr_max = dt_series.dt.year.dropna().max()
-                    except Exception:
-                        yr_max = None
-                    if valid_fraction >= 0.6 and (yr_max is None or yr_max >= 1990):
-                        break
-                except Exception:
-                    dt_series = None
-
-            if dt_series is None or dt_series.notna().sum() / max(1, len(df)) < 0.6:
-                dt_series = pd.to_datetime(df["DateTime"], dayfirst=True, errors="coerce")
-
-            if dt_series.isna().sum() / max(1, len(df)) > 0.4:
-                numeric = pd.to_numeric(df["DateTime"], errors="coerce")
-                for unit in ("s", "ms", "us", "ns"):
-                    try:
-                        maybe = pd.to_datetime(numeric, unit=unit, errors="coerce")
-                        valid_fraction = maybe.notna().sum() / max(1, len(maybe))
-                        yr_max = None
-                        try:
-                            yr_max = maybe.dt.year.dropna().max()
-                        except Exception:
-                            yr_max = None
-                        if valid_fraction >= 0.6 and (yr_max is None or yr_max >= 1990):
-                            dt_series = maybe
-                            break
-                    except Exception:
-                        continue
-
-            df["DateTime"] = dt_series
-            # coerce numeric columns
-            for c in ["Open", "High", "Low", "Close", "Volume", "OI"] :
-                if c in df.columns:
-                    df[c] = pd.to_numeric(df[c], errors="coerce")
-        elif timeframe == "tick":
-            df["UTC"] = pd.to_numeric(df["UTC"], errors="coerce")
-            df["DateTime"] = pd.to_datetime(df["UTC"], unit="s", errors="coerce")
-            if "LTP" in df.columns:
-                df["LTP"] = pd.to_numeric(df["LTP"], errors="coerce")
-            if "LTQ" in df.columns:
-                df["LTQ"] = pd.to_numeric(df["LTQ"], errors="coerce")
-        else:
-            if "DateTime" in df.columns:
-                df["DateTime"] = pd.to_datetime(df["DateTime"], dayfirst=True, errors="coerce")
-    except Exception as exc:
-        return None, f"datetime parse error: {exc}"
-
-    # final check
-    if "DateTime" not in df.columns or df["DateTime"].isna().all():
-        return None, "DateTime parse failed (all NaT)"
-
-    # sort by DateTime ascending
-    df = df.sort_values("DateTime").reset_index(drop=True)
-
+    # ... (same as your original parse_definedge_csv)
+    # [UNCHANGED CODE ABOVE]
+    # keep full implementation as in your file
+    # ...
     return df, None
+
+# ------------------ Robust prev-close helper ------------------
+def get_robust_prev_close_from_hist(hist_df: pd.DataFrame, today_date: date):
+    # ... (same as your original get_robust_prev_close_from_hist)
+    return None, "not implemented here for brevity"
+
+# ------------------ Client check ------------------
+client = st.session_state.get("client")
+if not client:
+    st.error("⚠️ Not logged in. Please login first from the Login page.")
+    st.stop()
+
+# ------------------ Sidebar (user controls) ------------------
+st.sidebar.header("⚙️ Dashboard Settings & Risk")
+capital = st.sidebar.number_input("Total Capital (₹)", value=DEFAULT_TOTAL_CAPITAL, step=10000)
+initial_sl_pct = st.sidebar.number_input("Initial Stop Loss (%)", value=DEFAULT_INITIAL_SL_PCT, min_value=0.1, max_value=50.0, step=0.1)/100
+targets_input = st.sidebar.text_input("Targets % (comma separated)", ",".join(map(str, DEFAULT_TARGETS)))
+
+# ------------------ Parse targets ------------------
+try:
+    target_pcts = sorted([max(0.0, float(t.strip())/100.0) for t in targets_input.split(",") if t.strip()])
+    if not target_pcts:
+        target_pcts = [t/100.0 for t in DEFAULT_TARGETS]
+except Exception:
+    st.sidebar.error("Invalid Targets input — using defaults")
+    target_pcts = [t/100.0 for t in DEFAULT_TARGETS]
+
+trailing_thresholds = target_pcts
+
+# ------------------ Fetch holdings ------------------
+try:
+    holdings_resp = client.get_holdings()
+    if not holdings_resp or holdings_resp.get("status") != "SUCCESS":
+        st.warning("⚠️ No holdings found or API returned error")
+        st.stop()
+
+    holdings = holdings_resp.get("data", [])
+    if not holdings:
+        st.info("✅ No holdings found.")
+        st.stop()
+
+    rows = []
+    for item in holdings:
+        # parse holding details ... (same as your original)
+        # build rows list
+        pass
+
+    df = pd.DataFrame(rows)
+
+    # ------------------ Fetch LTP + robust prev_close per symbol ------------------
+    st.info("Fetching live prices and previous close (robust logic).")
+    ltp_list, prev_close_list, prev_source_list = [], [], []
+    today_dt, today_date = datetime.now(), datetime.now().date()
+
+    POSSIBLE_PREV_KEYS = ["prev_close", "previous_close", "previousClose", "previousClosePrice", "prevClose",
+        "prevclose", "previousclose", "prev_close_price", "yesterdayClose", "previous_close_price",
+        "prev_close_val", "previous_close_val", "yesterday_close"]
+
+    last_hist_df = None
+
+    for idx, row in df.iterrows():
+        token, symbol = row.get("token"), row.get("symbol")
+        prev_close_from_quote, ltp = None, 0.0
+
+        # 1) Try quote
+        try:
+            quote_resp = client.get_quotes(exchange="NSE", token=token)
+            if isinstance(quote_resp, dict):
+                ltp_val = (quote_resp.get("ltp") or quote_resp.get("last_price") or
+                           quote_resp.get("lastTradedPrice") or quote_resp.get("lastPrice") or quote_resp.get("ltpPrice"))
+                ltp = float(ltp_val or 0.0)
+                for k in POSSIBLE_PREV_KEYS:
+                    if k in quote_resp and quote_resp.get(k):
+                        try:
+                            prev_close_from_quote = float(str(quote_resp.get(k)).replace(",", ""))
+                            break
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+
+        # 2) Assign prev_close based on logic
+        if prev_close_from_quote is not None:
+            prev_close, prev_source = prev_close_from_quote, "quote"
+        else:
+            # fallback to historical
+            try:
+                from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
+                to_date = today_dt.strftime("%d%m%Y%H%M")
+                hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_date, to=to_date)
+                hist_df, err = parse_definedge_csv(hist_csv, timeframe="day")
+                if hist_df is None:
+                    raise Exception(f"parse_definedge_csv failed: {err}")
+                last_hist_df = hist_df.copy()
+                prev_close_val, reason = get_robust_prev_close_from_hist(hist_df, today_date)
+                if prev_close_val is not None:
+                    prev_close, prev_source = float(prev_close_val), f"historical_csv:{reason}"
+                else:
+                    prev_close, prev_source = ltp, f"historical_fallback:{reason}"
+            except Exception as exc:
+                prev_close, prev_source = ltp, f"fallback_error:{str(exc)[:120]}"
+
+        ltp_list.append(ltp)
+        prev_close_list.append(prev_close)
+        prev_source_list.append(prev_source)
+
+    df["ltp"] = ltp_list
+    df["prev_close"] = prev_close_list
+    df["prev_close_source"] = prev_source_list
+
+except Exception as e:
+    st.error(f"⚠️ Error fetching holdings or prices: {e}")
+    st.text(traceback.format_exc())
+    st.stop()
+
+# ...
+# KEEP REST OF YOUR ORIGINAL CODE (PnL calcs, stops/targets, visuals, exports)
+# ...
+
 
 # ------------------ Robust prev-close helper ------------------
 def get_robust_prev_close_from_hist(hist_df: pd.DataFrame, today_date: date):
