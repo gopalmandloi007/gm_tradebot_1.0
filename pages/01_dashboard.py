@@ -127,25 +127,22 @@ def fetch_ltp(client, token):
         return 0.0
 
 
-# ------------------ Function 2: Fetch Previous Close ------------------
 def fetch_prev_close(client, token, today_dt=None):
     """Fetch previous close (yesterday's close price)."""
     if today_dt is None:
         today_dt = datetime.now()
 
     try:
-        yesterday = today_dt.date() - timedelta(days=1)
-        date_str = yesterday.strftime("%Y%m%d")
-
-        from_time = f"{date_str}0000"
-        to_time = f"{date_str}1530"
+        # पिछले 3 दिन का history लो (safe buffer)
+        from_dt = (today_dt - timedelta(days=3)).strftime("%Y%m%d")
+        to_dt = (today_dt - timedelta(days=1)).strftime("%Y%m%d")
 
         hist_csv = client.historical_csv(
             segment="NSE",
             token=token,
             timeframe="day",
-            frm=from_time,
-            to=to_time,
+            frm=f"{from_dt}0000",
+            to=f"{to_dt}2359",
         )
 
         if not isinstance(hist_csv, str):
@@ -156,10 +153,11 @@ def fetch_prev_close(client, token, today_dt=None):
         if hist_df.empty:
             return 0.0
 
-        # format: [date, open, high, low, close, volume] assumed
+        # format: [date, open, high, low, close, volume]
         prev_close_val = hist_df.iloc[-1, 4]
         return float(prev_close_val)
-    except Exception:
+    except Exception as e:
+        print("Prev close fetch error:", e)
         return 0.0
 
 
