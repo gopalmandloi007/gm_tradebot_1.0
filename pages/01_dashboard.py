@@ -190,7 +190,7 @@ def get_robust_prev_close_from_hist(hist_df: pd.DataFrame, today_date: date):
                 dedup.append(v)
                 seen.add(v)
         if len(dedup) >= 2:
-            return float(dedup[-2]), "dedup_second_last"
+            return float(dedup[-1]), "dedup_second_last"
         else:
             return float(closes_series[-1]), "last_available"
     except Exception as exc:
