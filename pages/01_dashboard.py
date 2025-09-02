@@ -15,6 +15,202 @@ DEFAULT_TOTAL_CAPITAL = 1400000
 DEFAULT_INITIAL_SL_PCT = 2.0
 DEFAULT_TARGETS = [10, 20, 30, 40]
 
+# ------------------ Helper: parse Definedge CSV (headerless) ------------------
+def parse_definedge_csv(raw_text, timeframe="day"):
+    """
+    Parse raw CSV returned by Definedge (they return CSV without headers).
+    For 'day' or 'minute' timeframe, expected columns:
+      [Dateandtime, Open, High, Low, Close, Volume, (OI optional)]
+    For 'tick' timeframe, expected columns:
+      [UTC(in seconds), LTP, LTQ, OI]
+    Returns (hist_df, error_or_none)
+    """
+    if raw_text is None:
+        return None, "empty response"
+
+    # normalize to string
+    if isinstance(raw_text, bytes):
+        try:
+            s = raw_text.decode("utf-8", "ignore")
+        except Exception:
+            s = str(raw_text)
+    else:
+        s = str(raw_text)
+
+    s = s.strip()
+    if not s:
+        return None, "empty CSV"
+
+    # Read as headerless CSV (commas). Definedge docs say CSV without headers.
+    try:
+        df = pd.read_csv(io.StringIO(s), header=None)
+    except Exception as exc:
+        return None, f"read_csv error: {exc}"
+
+    if df.shape[0] == 0:
+        return None, "no rows"
+
+    # Assign column names for day/minute
+    if timeframe in ("day", "minute"):
+        # expected at least 6 columns: Dateandtime, Open, High, Low, Close, Volume, (OI optional)
+        if df.shape[1] >= 6:
+            colnames = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
+            if df.shape[1] >= 7:
+                colnames = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
+            # if there are more columns, keep them as extras
+            extras = []
+            if df.shape[1] > len(colnames):
+                extras = [f"X{i}" for i in range(df.shape[1] - len(colnames))]
+            df.columns = colnames + extras
+        else:
+            # fallback: name generically
+            df.columns = [f"C{i}" for i in range(df.shape[1])]
+            df = df.rename(columns={df.columns[0]: "DateTime"})
+    elif timeframe == "tick":
+        # tick: UTC (seconds), LTP, LTQ, OI
+        # ensure at least 4 cols
+        if df.shape[1] >= 4:
+            df.columns = ["UTC", "LTP", "LTQ", "OI"] + [f"X{i}" for i in range(df.shape[1] - 4)]
+        else:
+            df.columns = [f"C{i}" for i in range(df.shape[1])]
+    else:
+        df.columns = [f"C{i}" for i in range(df.shape[1])]
+
+    # Parse datetime / UTC
+    try:
+        if timeframe in ("day", "minute"):
+            # Try several datetime formats commonly used by Definedge:
+            dt_series = None
+            candidates = [
+                "%d-%m-%Y %H:%M:%S",
+                "%d-%m-%Y %H:%M",
+                "%d/%m/%Y %H:%M:%S",
+                "%d/%m/%Y %H:%M",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M"
+            ]
+            for fmt in candidates:
+                try:
+                    dt_series = pd.to_datetime(df["DateTime"], format=fmt, dayfirst=True, errors="coerce")
+                    valid_fraction = dt_series.notna().sum() / max(1, len(dt_series))
+                    yr_max = None
+                    try:
+                        yr_max = dt_series.dt.year.dropna().max()
+                    except Exception:
+                        yr_max = None
+                    if valid_fraction >= 0.6 and (yr_max is None or yr_max >= 1990):
+                        break
+                except Exception:
+                    dt_series = None
+
+            if dt_series is None or dt_series.notna().sum() / max(1, len(df)) < 0.6:
+                dt_series = pd.to_datetime(df["DateTime"], dayfirst=True, errors="coerce")
+
+            if dt_series.isna().sum() / max(1, len(df)) > 0.4:
+                numeric = pd.to_numeric(df["DateTime"], errors="coerce")
+                for unit in ("s", "ms", "us", "ns"):
+                    try:
+                        maybe = pd.to_datetime(numeric, unit=unit, errors="coerce")
+                        valid_fraction = maybe.notna().sum() / max(1, len(maybe))
+                        yr_max = None
+                        try:
+                            yr_max = maybe.dt.year.dropna().max()
+                        except Exception:
+                            yr_max = None
+                        if valid_fraction >= 0.6 and (yr_max is None or yr_max >= 1990):
+                            dt_series = maybe
+                            break
+                    except Exception:
+                        continue
+
+            df["DateTime"] = dt_series
+            # coerce numeric columns
+            for c in ["Open", "High", "Low", "Close", "Volume", "OI"] :
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors="coerce")
+        elif timeframe == "tick":
+            df["UTC"] = pd.to_numeric(df["UTC"], errors="coerce")
+            df["DateTime"] = pd.to_datetime(df["UTC"], unit="s", errors="coerce")
+            if "LTP" in df.columns:
+                df["LTP"] = pd.to_numeric(df["LTP"], errors="coerce")
+            if "LTQ" in df.columns:
+                df["LTQ"] = pd.to_numeric(df["LTQ"], errors="coerce")
+        else:
+            if "DateTime" in df.columns:
+                df["DateTime"] = pd.to_datetime(df["DateTime"], dayfirst=True, errors="coerce")
+    except Exception as exc:
+        return None, f"datetime parse error: {exc}"
+
+    # final check
+    if "DateTime" not in df.columns or df["DateTime"].isna().all():
+        return None, "DateTime parse failed (all NaT)"
+
+    # sort by DateTime ascending
+    df = df.sort_values("DateTime").reset_index(drop=True)
+
+    return df, None
+
+# ------------------ Robust prev-close helper ------------------
+def get_robust_prev_close_from_hist(hist_df: pd.DataFrame, today_date: date):
+    """
+    Given a parsed historical DataFrame (with DateTime and Close),
+    return (prev_close_value_or_None, reason_string).
+    Logic:
+      1) Prefer most recent trading date strictly before today (last row of that date).
+      2) If no such prior date (e.g. file only contains today's data), dedupe Close values
+         (keeping order) and pick second-last distinct close if available.
+      3) Else fall back to last available close.
+    """
+    try:
+        # ensure DateTime and Close present & clean
+        if "DateTime" not in hist_df.columns:
+            return None, "no DateTime column"
+        if "Close" not in hist_df.columns:
+            # attempt common alt names
+            for alt in ["close", "C4", "Last", "last"]:
+                if alt in hist_df.columns:
+                    hist_df = hist_df.rename(columns={alt: "Close"})
+                    break
+            if "Close" not in hist_df.columns:
+                return None, "no Close column"
+
+        df = hist_df.dropna(subset=["DateTime"]).copy()
+        if df.empty:
+            return None, "no valid DateTime rows"
+
+        df["date_only"] = df["DateTime"].dt.date
+        # coerce Close numeric safely
+        df["Close_numeric"] = pd.to_numeric(df["Close"], errors="coerce")
+
+        # 1) Look for most recent trading date strictly before today
+        prev_dates = [d for d in sorted(df["date_only"].unique()) if d < today_date]
+        if prev_dates:
+            prev_trading_date = prev_dates[-1]
+            prev_rows = df[df["date_only"] == prev_trading_date].sort_values("DateTime")
+            # take last available close for that day
+            val = prev_rows["Close_numeric"].dropna().iloc[-1]
+            return float(val), "prev_trading_date"
+        else:
+            # 2) No prior date. Try deduplicated sequence approach:
+            closes_series = df["Close_numeric"].dropna().tolist()
+            if not closes_series:
+                return None, "no numeric closes"
+            # dedupe while preserving order
+            seen = set()
+            dedup = []
+            for v in closes_series:
+                if v not in seen:
+                    dedup.append(v)
+                    seen.add(v)
+            if len(dedup) >= 2:
+                # second last unique close is likely "yesterday close"
+                return float(dedup[-2]), "dedup_second_last"
+            else:
+                # fallback to last close available
+                return float(closes_series[-1]), "last_available"
+    except Exception as exc:
+        return None, f"error:{str(exc)[:120]}"
+
 # ------------------ Client check ------------------
 client = st.session_state.get("client")
 if not client:
@@ -57,122 +253,167 @@ try:
 
     rows = []
     for item in holdings:
-        avg_buy_price = float(item.get("avg_buy_price") or 0)
-        dp_qty = float(item.get("dp_qty") or 0)
-        t1_qty = float(item.get("t1_qty") or 0)
-        holding_used = float(item.get("holding_used") or 0)
+        # Defensive parsing for numeric fields
+        try:
+            avg_buy_price = float(item.get("avg_buy_price") or 0)
+        except Exception:
+            avg_buy_price = 0.0
+        try:
+            dp_qty = float(item.get("dp_qty") or 0)
+        except Exception:
+            dp_qty = 0.0
+        try:
+            t1_qty = float(item.get("t1_qty") or 0)
+        except Exception:
+            t1_qty = 0.0
+        try:
+            holding_used = float(item.get("holding_used") or 0)
+        except Exception:
+            holding_used = 0.0
+
         total_qty = int(dp_qty + t1_qty + holding_used)
 
-        for sym in item.get("tradingsymbol", []):
-            if sym.get("exchange") != "NSE":
-                continue
+        tradings = item.get("tradingsymbol") or []
+        if isinstance(tradings, dict):
+            tradings = [tradings]
+        if isinstance(tradings, str):
             rows.append({
-                "symbol": sym.get("tradingsymbol"),
-                "token": sym.get("token"),
+                "symbol": tradings,
+                "token": item.get("token"),
                 "avg_buy_price": avg_buy_price,
                 "quantity": total_qty,
                 "product_type": item.get("product_type", "")
             })
+        else:
+            for sym in tradings:
+                sym_obj = sym if isinstance(sym, dict) else {}
+                sym_exchange = sym_obj.get("exchange") if isinstance(sym_obj, dict) else None
+                if sym_exchange and sym_exchange != "NSE":
+                    continue
+                rows.append({
+                    "symbol": sym_obj.get("tradingsymbol") or sym_obj.get("symbol") or item.get("tradingsymbol"),
+                    "token": sym_obj.get("token") or item.get("token"),
+                    "avg_buy_price": avg_buy_price,
+                    "quantity": total_qty,
+                    "product_type": item.get("product_type", "")
+                })
 
     if not rows:
         st.warning("⚠️ No NSE holdings found.")
         st.stop()
 
     df = pd.DataFrame(rows)
+    df = df.dropna(subset=["symbol"]).reset_index(drop=True)
 
     # ------------------ Fetch LTP + robust prev_close per symbol ------------------
     st.info("Fetching live prices and previous close (robust logic).")
     ltp_list = []
     prev_close_list = []
+    prev_source_list = []
 
     today_dt = datetime.now()
     today_date = today_dt.date()
 
+    POSSIBLE_PREV_KEYS = [
+        "prev_close", "previous_close", "previousClose", "previousClosePrice", "prevClose",
+        "prevclose", "previousclose", "prev_close_price", "yesterdayClose", "previous_close_price",
+        "prev_close_val", "previous_close_val", "yesterday_close"
+    ]
+
+    last_hist_df = None
     for idx, row in df.iterrows():
         token = row.get("token")
-        # safe quote fetch
+        symbol = row.get("symbol")
+        prev_close_from_quote = None
+
+        # 1) Try to get LTP and prev_close from quote response (fast)
         try:
             quote_resp = client.get_quotes(exchange="NSE", token=token)
             if isinstance(quote_resp, dict):
-                ltp_val = quote_resp.get("ltp") or quote_resp.get("last_price") or quote_resp.get("lastTradedPrice")
+                ltp_val = (quote_resp.get("ltp") or quote_resp.get("last_price") or
+                           quote_resp.get("lastTradedPrice") or quote_resp.get("lastPrice") or quote_resp.get("ltpPrice"))
+                for k in POSSIBLE_PREV_KEYS:
+                    if k in quote_resp and quote_resp.get(k) not in (None, "", []):
+                        try:
+                            prev_close_from_quote = float(quote_resp.get(k))
+                            break
+                        except Exception:
+                            try:
+                                prev_close_from_quote = float(str(quote_resp.get(k)).replace(",", ""))
+                                break
+                            except Exception:
+                                prev_close_from_quote = None
+                try:
+                    ltp = float(ltp_val or 0.0)
+                except Exception:
+                    ltp = 0.0
             else:
-                ltp_val = None
-            ltp = float(ltp_val or 0.0)
+                ltp = 0.0
+                prev_close_from_quote = None
         except Exception:
             ltp = 0.0
+            prev_close_from_quote = None
+
         ltp_list.append(ltp)
+        prev_close = prev_close_from_quote if prev_close_from_quote is not None else ltp
+        prev_source = "quote" if prev_close_from_quote is not None else None
 
-        # Initialize prev_close with current ltp as fallback
-        prev_close = ltp
-        try:
-            from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
-            to_date = today_dt.strftime("%d%m%Y%H%M")
-            hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_date, to=to_date)
+        # 2) If quote didn't provide prev_close, fallback to Definedge historical CSV (day timeframe)
+        if prev_close_from_quote is None:
+            try:
+                # attempt to fetch 30 days of day-time history via client.historical_csv (existing method)
+                from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
+                to_date = today_dt.strftime("%d%m%Y%H%M")
+                hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_date, to=to_date)
 
-            # some brokers return CSV bytes or string; handle both
-            if not isinstance(hist_csv, str):
-                hist_csv = str(hist_csv)
+                hist_df, err = parse_definedge_csv(hist_csv, timeframe="day")
+                if hist_df is None:
+                    raise Exception(f"parse_definedge_csv failed: {err}")
 
-            hist_df = pd.read_csv(io.StringIO(hist_csv), header=None)
-            # dynamic columns
-            if hist_df.shape[1] >= 6:
-                if hist_df.shape[1] == 7:
-                    hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
+                # store last hist_df for viewing if needed
+                last_hist_df = hist_df.copy()
+
+                prev_close_val, reason = get_robust_prev_close_from_hist(hist_df, today_date)
+                if prev_close_val is None:
+                    # As ultimate fallback use ltp (or 0.0)
+                    prev_close = float(prev_close) if prev_close is not None else float(ltp or 0.0)
+                    prev_source = f"historical_fallback:{reason}"
                 else:
-                    hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
-
-                # try multiple date formats
-                def try_parse(dt_str):
-                    for fmt in ("%d-%m-%Y %H:%M", "%d-%m-%Y", "%Y-%m-%d %H:%M:%S", "%d%m%Y%H%M", "%Y-%m-%d"): 
-                        try:
-                            return pd.to_datetime(dt_str, format=fmt, dayfirst=True)
-                        except Exception:
-                            continue
-                    # fallback
-                    return pd.to_datetime(dt_str, dayfirst=True, errors='coerce')
-
-                hist_df["DateTime"] = hist_df["DateTime"].apply(try_parse)
-                hist_df = hist_df.dropna(subset=["DateTime"]).sort_values(by="DateTime")
-                hist_df["date_only"] = hist_df["DateTime"].dt.date
-
-                # Determine yesterday's date
-                yesterday_date = today_date - timedelta(days=1)
-
-                # Try to get data for yesterday
-                prev_days = hist_df[hist_df["date_only"] == yesterday_date]
-                if not prev_days.empty:
-                    prev_close = float(prev_days.iloc[-1]["Close"])
-                else:
-                    # fallback: get last date before today
-                    prev_days = hist_df[hist_df["date_only"] < today_date]
-                    if not prev_days.empty:
-                        prev_close = float(prev_days.iloc[-1]["Close"])
-                    else:
-                        # fallback: use latest data available
-                        prev_close = float(hist_df.iloc[-1]["Close"])
-            else:
-                prev_close = ltp
-        except Exception:
-            prev_close = ltp
+                    prev_close = float(prev_close_val)
+                    prev_source = f"historical_csv:{reason}"
+            except Exception as exc:
+                # do not blow up; keep existing prev_close (ltp) and mark reason
+                prev_close = prev_close if prev_close is not None else ltp
+                prev_source = f"fallback_error:{str(exc)[:120]}"
 
         prev_close_list.append(prev_close)
+        prev_source_list.append(prev_source)
 
     df["ltp"] = ltp_list
     df["prev_close"] = prev_close_list
+    df["prev_close_source"] = prev_source_list
 
 except Exception as e:
-    st.error(f"⚠️ Error fetching data: {e}")
+    st.error(f"⚠️ Error fetching holdings or prices: {e}")
+    st.text(traceback.format_exc())
     st.stop()
 
+# ------------------ Final historical sample display (optional) ------------------
+try:
+    if last_hist_df is not None and last_hist_df.shape[0] > 0:
+        st.write("Historical data sample (last fetched symbol):")
+        st.dataframe(last_hist_df.head())
+except Exception:
+    pass
+
 # ------------------ Calculate P&L and other metrics ------------------
-# All these calculations should be **outside** the loop that fetches prices
 df["invested_value"] = df["avg_buy_price"] * df["quantity"]
 df["current_value"] = df["ltp"] * df["quantity"]
 df["today_pnl"] = (df["ltp"] - df["prev_close"]) * df["quantity"]
 df["overall_pnl"] = df["current_value"] - df["invested_value"]
 df["capital_allocation_%"] = (df["invested_value"] / capital) * 100
 
-# ------------------ Define calc_stops_targets function ------------------
+# ------------------ Function to calculate stops and targets ------------------
 def calc_stops_targets(row):
     avg = float(row.get("avg_buy_price") or 0.0)
     qty = int(row.get("quantity") or 0)
@@ -194,26 +435,20 @@ def calc_stops_targets(row):
     if side == "LONG":
         initial_sl_price = round(avg * (1 - initial_sl_pct), 4)
         targets = [round(avg * (1 + t), 4) for t in target_pcts]
-
-        # percent movement from avg to LTP
         perc = (ltp / avg - 1) if avg > 0 else 0.0
 
-        # find highest threshold crossed
         crossed_indices = [i for i, th in enumerate(trailing_thresholds) if perc >= th]
         if crossed_indices:
             idx_max = max(crossed_indices)
-            # mapping: if idx_max == 0 => tsl_pct = 0 (breakeven)
             tsl_pct = 0.0 if idx_max == 0 else trailing_thresholds[idx_max - 1]
             tsl_price = round(avg * (1 + tsl_pct), 4)
         else:
             tsl_price = initial_sl_price
 
-        # ensure TSL never below initial SL
         tsl_price = max(tsl_price, initial_sl_price)
 
         open_risk = round(max(0.0, (avg - tsl_price) * qty), 2)
         initial_risk = round(max(0.0, (avg - initial_sl_price) * qty), 2)
-
         realized_if_tsl_hit = round((tsl_price - avg) * qty, 2)
 
         return {
@@ -225,14 +460,12 @@ def calc_stops_targets(row):
             "open_risk": open_risk,
             "realized_if_tsl_hit": realized_if_tsl_hit
         }
-
     else:  # SHORT
         avg_abs = abs(avg)
         initial_sl_price = round(avg_abs * (1 + initial_sl_pct), 4)
         targets = [round(avg_abs * (1 - t), 4) for t in target_pcts]
-
-        # percent movement in favour of short = (avg - ltp)/avg
         perc = ((avg_abs - ltp) / avg_abs) if avg_abs > 0 else 0.0
+
         crossed_indices = [i for i, th in enumerate(trailing_thresholds) if perc >= th]
         if crossed_indices:
             idx_max = max(crossed_indices)
@@ -241,7 +474,6 @@ def calc_stops_targets(row):
         else:
             tsl_price = initial_sl_price
 
-        # for short open risk is (tsl - avg) * abs(qty)
         open_risk = round(max(0.0, (tsl_price - avg_abs) * abs(qty)), 2)
         initial_risk = round(max(0.0, (initial_sl_price - avg_abs) * abs(qty)), 2)
         realized_if_tsl_hit = round((avg_abs - tsl_price) * abs(qty), 2)
@@ -256,7 +488,7 @@ def calc_stops_targets(row):
             "realized_if_tsl_hit": realized_if_tsl_hit
         }
 
-# ------------------ Apply stop/target calculations ------------------
+# ------------------ Apply stops and targets ------------------
 results = df.apply(calc_stops_targets, axis=1, result_type="expand")
 df = pd.concat([df, results], axis=1)
 
@@ -265,7 +497,7 @@ for i, tp in enumerate(target_pcts, start=1):
     df[f"target_{i}_pct"] = tp * 100
     df[f"target_{i}_price"] = df["targets"].apply(lambda lst: round(lst[i-1], 4) if isinstance(lst, list) and len(lst) >= i else 0.0)
 
-# ------------------ Portfolio metrics ------------------
+# ------------------ Portfolio Metrics ------------------
 total_invested = df["invested_value"].sum()
 total_current = df["current_value"].sum()
 total_overall_pnl = df["overall_pnl"].sum()
@@ -283,7 +515,7 @@ k3.metric("Overall Unrealized PnL", f"₹{total_overall_pnl:,.2f}")
 k4.metric("Today PnL", f"₹{total_today_pnl:,.2f}")
 k5.metric("Total Open Risk (TSL)", f"₹{total_open_risk:,.2f}")
 
-# ------------------ Intelligent Messaging about Open Risk / Breakeven ------------------
+# ------------------ Messaging about open risk ------------------
 total_positions = len(df)
 breakeven_count = int((df["open_risk"] == 0).sum())
 profitable_by_ltp = int((df["ltp"] > df["avg_buy_price"]).sum())
@@ -292,12 +524,11 @@ if breakeven_count == total_positions:
     st.success(f"✅ All {total_positions} positions have TSL >= AvgBuy (no open risk). {profitable_by_ltp} of them currently show unrealized profit by LTP.")
 else:
     st.info(f"ℹ️ {breakeven_count}/{total_positions} positions have no open risk (TSL >= AvgBuy). {profitable_by_ltp} positions currently showing unrealized profit by LTP.")
-    # show top few that still have open risk
     risky = df[df["open_risk"] > 0].sort_values(by="open_risk", ascending=False).head(10)
     if not risky.empty:
         st.table(risky[["symbol", "quantity", "avg_buy_price", "ltp", "tsl_price", "open_risk"]])
 
-# ------------------ If ALL TSL are hit: compute realized PnL scenario ------------------
+# ------------------ Scenario analysis ------------------
 st.subheader("🔮 Scenario: If ALL TSL get hit (immediate exit at current TSL)")
 st.write("This assumes each position is closed at its calculated TSL price. For LONGs, PnL = (TSL - AvgBuy) * Qty. For SHORTs, PnL = (AvgBuy - TSL) * Qty.")
 
@@ -306,7 +537,7 @@ delta_vs_unrealized = total_realized_if_all_tsl - total_overall_pnl
 st.metric("Delta vs Current Unrealized PnL", f"₹{delta_vs_unrealized:,.2f}")
 st.write(f"That is {total_realized_if_all_tsl/capital*100:.2f}% of your total capital.")
 
-# show breakdown of winners/losers under the scenario
+# Breakdown of winners/losers
 df["realized_if_tsl_sign"] = df["realized_if_tsl_hit"].apply(lambda x: "profit" if x > 0 else ("loss" if x < 0 else "breakeven"))
 winners = df[df["realized_if_tsl_hit"] > 0]
 losers = df[df["realized_if_tsl_hit"] < 0]
@@ -319,9 +550,8 @@ if not losers.empty:
     st.table(losers[["symbol", "quantity", "avg_buy_price", "tsl_price", "realized_if_tsl_hit"]].sort_values(by="realized_if_tsl_hit").head(10))
 
 # ------------------ Positions & Risk Table ------------------
-display_cols = ["symbol", "quantity", "side", "avg_buy_price", "ltp", "prev_close", "invested_value", "current_value", "overall_pnl", "today_pnl",
+display_cols = ["symbol", "quantity", "side", "avg_buy_price", "ltp", "prev_close", "prev_close_source", "invested_value", "current_value", "overall_pnl", "today_pnl",
                 "capital_allocation_%", "initial_sl_price", "tsl_price", "initial_risk", "open_risk", "realized_if_tsl_hit"]
-# add target columns
 for i in range(1, len(target_pcts) + 1):
     display_cols += [f"target_{i}_pct", f"target_{i}_price"]
 
@@ -340,7 +570,7 @@ st.plotly_chart(fig, use_container_width=True)
 st.subheader("⚠️ Risk Exposure by Position (Initial Risk % of Capital)")
 risk_df = df[["symbol", "initial_risk"]].copy()
 risk_df["initial_risk_pct_of_capital"] = (risk_df["initial_risk"] / capital) * 100
-fig2 = go.Figure(data=[go.Bar(x=risk_df["symbol"], y=risk_df["initial_risk_pct_of_capital"])])
+fig2 = go.Figure(data=[go.Bar(x=risk_df["symbol"], y=risk_df["initial_risk_pct_of_capital"])] )
 fig2.update_layout(yaxis_title="% of Capital", xaxis_title="Symbol")
 st.plotly_chart(fig2, use_container_width=True)
 
