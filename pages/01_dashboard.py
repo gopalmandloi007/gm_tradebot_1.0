@@ -15,6 +15,187 @@ DEFAULT_TOTAL_CAPITAL = 1400000
 DEFAULT_INITIAL_SL_PCT = 2.0
 DEFAULT_TARGETS = [10, 20, 30, 40]
 
+# ------------------ Helper: robust historical CSV parser ------------------
+def parse_historical_csv(raw_csv_text):
+    """
+    Robustly parse historical CSV text to a dataframe with a reliable DateTime column and Close column.
+    Returns (hist_df, error_message_or_None).
+    """
+    s = raw_csv_text
+    if isinstance(s, bytes):
+        try:
+            s = s.decode("utf-8", "ignore")
+        except Exception:
+            s = str(s)
+    s = str(s)
+    if not s.strip():
+        return None, "empty CSV"
+
+    separators = [",", ";", "\t", "|"]
+    best_candidate = None
+    best_score = -1
+    best_reason = None
+
+    def try_parse_series_to_datetime(srs):
+        """Try multiple strategies to parse a series to datetimes; return parsed Series and valid_count."""
+        n = len(srs)
+        if n == 0:
+            return pd.Series([pd.NaT]*0), 0
+
+        # first try direct pandas inference (strings)
+        parsed = pd.to_datetime(srs, dayfirst=True, errors="coerce")
+        valid = parsed.notna().sum()
+        # if parsed yields years that look sane, prefer it
+        try:
+            max_year = parsed.dt.year.dropna().max() if valid > 0 else None
+        except Exception:
+            max_year = None
+
+        if valid / max(1, n) >= 0.6 and (max_year is None or (max_year and max_year >= 1990)):
+            return parsed, valid
+
+        # if not good enough, try numeric epoch conversions if series can be numeric
+        numeric = pd.to_numeric(srs, errors="coerce")
+        if numeric.notna().sum() == 0:
+            # no numeric values, return what we have
+            return parsed, valid
+
+        for unit in ["ns", "us", "ms", "s"]:
+            try:
+                parsed2 = pd.to_datetime(numeric, unit=unit, errors="coerce")
+                valid2 = parsed2.notna().sum()
+                try:
+                    max_year2 = parsed2.dt.year.dropna().max() if valid2 > 0 else None
+                except Exception:
+                    max_year2 = None
+                if valid2 / max(1, n) >= 0.6 and (max_year2 is None or (max_year2 and max_year2 >= 1990)):
+                    return parsed2, valid2
+            except Exception:
+                continue
+
+        # if none hit threshold, return the best we have (direct parse)
+        return parsed, valid
+
+    # Try different separators and header options; pick the best candidate datetime column
+    for sep in separators:
+        for header_option in [0, None]:
+            try:
+                df_try = pd.read_csv(io.StringIO(s), sep=sep, header=header_option)
+            except Exception:
+                continue
+
+            # If file is empty after read, skip
+            if df_try.shape[0] == 0:
+                continue
+
+            # For each column, try parsing as datetime
+            for col in df_try.columns:
+                try:
+                    parsed_series, valid_count = try_parse_series_to_datetime(df_try[col])
+                except Exception:
+                    parsed_series, valid_count = pd.Series([pd.NaT]*len(df_try)), 0
+
+                # Score candidate: prefer more valid parsed datetimes and recent years
+                score = valid_count
+
+                # boost score if parsed years look recent
+                try:
+                    year_max = parsed_series.dt.year.dropna().max() if valid_count > 0 else None
+                    if year_max and year_max >= 2000:
+                        score += 1000
+                    elif year_max and (1975 <= year_max < 2000):
+                        score += 200
+                except Exception:
+                    pass
+
+                if score > best_score:
+                    best_score = score
+                    best_candidate = {
+                        "df": df_try.copy(),
+                        "sep": sep,
+                        "header": header_option,
+                        "date_col": col,
+                        "parsed_dt": parsed_series,
+                        "valid_count": valid_count
+                    }
+                    best_reason = f"sep={sep} header={header_option} col={col} valid={valid_count}"
+
+    # if no candidate found, fallback: try default read with comma and header=0
+    if best_candidate is None:
+        try:
+            df_fallback = pd.read_csv(io.StringIO(s), header=0)
+            # try to parse first column
+            first_col = df_fallback.columns[0] if len(df_fallback.columns) > 0 else None
+            if first_col is not None:
+                parsed_dt = pd.to_datetime(df_fallback[first_col], dayfirst=True, errors="coerce")
+                df_fallback["DateTime"] = parsed_dt
+                return df_fallback, None
+            else:
+                return None, "could not parse CSV"
+        except Exception as exc:
+            return None, f"fallback read failed: {exc}"
+
+    # Build hist_df from best candidate
+    hist_df = best_candidate["df"]
+    parsed_dt = best_candidate["parsed_dt"]
+
+    # If parsed_dt has too many NaT or looks like 1970 (bad parse), try numeric-unit-only approach on the chosen column
+    if parsed_dt.notna().sum() / max(1, len(parsed_dt)) < 0.3:
+        # attempt numeric conversions explicitly
+        numeric = pd.to_numeric(hist_df[best_candidate["date_col"]], errors="coerce")
+        for unit in ["ns", "us", "ms", "s"]:
+            try:
+                maybe = pd.to_datetime(numeric, unit=unit, errors="coerce")
+                if maybe.notna().sum() / max(1, len(maybe)) >= 0.6 and (maybe.dt.year.dropna().max() or 0) >= 1990:
+                    parsed_dt = maybe
+                    break
+            except Exception:
+                continue
+
+    # If parsed_dt still bad but parsed years are 1970 etc, we still accept it but mark a warning (we'll try to avoid 1970 later)
+    hist_df["DateTime"] = parsed_dt
+
+    # Now try to ensure Close column exists. Common cases:
+    cols_lower = [c.lower() for c in hist_df.columns]
+    if "close" not in cols_lower:
+        # if header missing or unnamed, try mapping by position
+        if hist_df.shape[1] >= 5:
+            # assume order DateTime, Open, High, Low, Close, Volume, OI (common)
+            expected = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
+            # create copy of values and assign expected names for the first n columns
+            hist_df = hist_df.copy()
+            hist_df.columns = expected[:hist_df.shape[1]]
+        else:
+            # try to find column whose values look like prices (numeric, not huge)
+            numeric_counts = {}
+            for c in hist_df.columns:
+                num = pd.to_numeric(hist_df[c], errors="coerce")
+                numeric_counts[c] = num.notna().sum()
+            # choose column (other than DateTime) with highest numeric counts
+            cand = max((c for c in hist_df.columns if c != "DateTime"), key=lambda x: numeric_counts.get(x, 0), default=None)
+            if cand:
+                hist_df = hist_df.rename(columns={cand: "Close"})
+
+    # Final cleanup: coerce Close to numeric if present
+    if "Close" in hist_df.columns:
+        hist_df["Close"] = pd.to_numeric(hist_df["Close"], errors="coerce")
+
+    # Drop rows without DateTime if too many
+    if hist_df["DateTime"].isna().all():
+        return None, f"parsed DateTime seems invalid ({best_reason})"
+
+    # If parsed DateTime rows have year < 1990 for majority, warn but continue
+    try:
+        yr_min = hist_df["DateTime"].dt.year.dropna().min()
+        if yr_min is not None and yr_min < 1990:
+            # still accept but return a warning
+            return hist_df, f"warning: parsed DateTime contains early years (min_year={yr_min}) - check CSV format"
+    except Exception:
+        pass
+
+    return hist_df, None
+
+
 # ------------------ Client check ------------------
 client = st.session_state.get("client")
 if not client:
@@ -77,13 +258,10 @@ try:
 
         total_qty = int(dp_qty + t1_qty + holding_used)
 
-        # tradingsymbol structure may vary by broker: handle list/dict/string
         tradings = item.get("tradingsymbol") or []
-        # if tradings is a dict/singleton (older APIs), normalize to list-of-dicts
         if isinstance(tradings, dict):
             tradings = [tradings]
         if isinstance(tradings, str):
-            # token may be in item; fallback mapping
             rows.append({
                 "symbol": tradings,
                 "token": item.get("token"),
@@ -93,10 +271,8 @@ try:
             })
         else:
             for sym in tradings:
-                # sym might be dict-like with keys tradingsymbol & token
                 sym_obj = sym if isinstance(sym, dict) else {}
                 sym_exchange = sym_obj.get("exchange") if isinstance(sym_obj, dict) else None
-                # If exchange key not present, assume NSE or trust outer item fields
                 if sym_exchange and sym_exchange != "NSE":
                     continue
                 rows.append({
@@ -112,38 +288,33 @@ try:
         st.stop()
 
     df = pd.DataFrame(rows)
-
-    # Normalize and drop invalid rows quickly
     df = df.dropna(subset=["symbol"]).reset_index(drop=True)
 
     # ------------------ Fetch LTP + robust prev_close per symbol ------------------
     st.info("Fetching live prices and previous close (robust logic).")
     ltp_list = []
     prev_close_list = []
+    prev_source_list = []
 
     today_dt = datetime.now()
     today_date = today_dt.date()
 
-    # helper: try many common keys that APIs might use for prev close
     POSSIBLE_PREV_KEYS = [
         "prev_close", "previous_close", "previousClose", "previousClosePrice", "prevClose",
         "prevclose", "previousclose", "prev_close_price", "yesterdayClose", "previous_close_price",
-        "prev_close_val", "previous_close_val"
+        "prev_close_val", "previous_close_val", "yesterday_close"
     ]
 
-    last_hist_df = None  # keep last parsed hist_df for sample display (optional)
-
+    last_hist_df = None
     for idx, row in df.iterrows():
         token = row.get("token")
         symbol = row.get("symbol")
-        # safe quote fetch (get LTP and maybe prev close if available)
         prev_close_from_quote = None
         try:
             quote_resp = client.get_quotes(exchange="NSE", token=token)
             if isinstance(quote_resp, dict):
                 ltp_val = (quote_resp.get("ltp") or quote_resp.get("last_price") or
                            quote_resp.get("lastTradedPrice") or quote_resp.get("lastPrice") or quote_resp.get("ltpPrice"))
-                # try to extract prev close from common keys
                 for k in POSSIBLE_PREV_KEYS:
                     if k in quote_resp and quote_resp.get(k) not in (None, "", []):
                         try:
@@ -155,7 +326,6 @@ try:
                                 break
                             except Exception:
                                 prev_close_from_quote = None
-                # ltp safe-cast
                 try:
                     ltp = float(ltp_val or 0.0)
                 except Exception:
@@ -168,93 +338,51 @@ try:
             prev_close_from_quote = None
 
         ltp_list.append(ltp)
-
-        # Initialize prev_close (prefer quote value)
         prev_close = prev_close_from_quote if prev_close_from_quote is not None else ltp
+        prev_source = "quote" if prev_close_from_quote is not None else None
 
-        # If quote didn't provide prev close, fallback to historical CSV robustly
         if prev_close_from_quote is None:
             try:
-                # prepare from/to for API (30 days)
                 from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
                 to_date = today_dt.strftime("%d%m%Y%H%M")
                 hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_date, to=to_date)
 
-                # normalize hist_csv to string
-                if isinstance(hist_csv, bytes):
-                    s = hist_csv.decode("utf-8", errors="ignore")
-                else:
-                    s = str(hist_csv)
+                hist_df, err = parse_historical_csv(hist_csv)
+                if hist_df is None:
+                    raise Exception(f"parse_historical_csv failed: {err}")
 
-                if not s.strip():
-                    raise ValueError("Empty historical CSV")
+                # store for sample view
+                last_hist_df = hist_df.copy()
 
-                # Detect header-like first line (contains date/open/close etc)
-                first_line = s.strip().splitlines()[0].lower()
-                header_like = any(x in first_line for x in ["date", "datetime", "time", "open", "close", "volume"])
+                # ensure Close exists
+                if "Close" not in hist_df.columns:
+                    raise Exception("No Close column detected in historical data")
 
-                if header_like:
-                    hist_df = pd.read_csv(io.StringIO(s), header=0)
-                else:
-                    hist_df = pd.read_csv(io.StringIO(s), header=None)
-
-                # If the CSV has few columns but no headers, try to assign sensible names later
-                # Find the column that looks like the datetime column (try first 3 columns)
-                date_col = None
-                for col in hist_df.columns[:3]:
-                    try:
-                        sample_val = hist_df[col].dropna().iloc[0]
-                        _ = pd.to_datetime(sample_val, dayfirst=True, errors="raise")
-                        date_col = col
-                        break
-                    except Exception:
-                        continue
-                if date_col is None:
-                    date_col = hist_df.columns[0]
-
-                # rename date column to DateTime for consistency
-                hist_df = hist_df.rename(columns={date_col: "DateTime"})
-
-                # If Close column doesn't exist by name, assign based on shape (common formats)
-                if "Close" not in hist_df.columns and hist_df.shape[1] >= 5:
-                    expected = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
-                    cols_to_apply = expected[:hist_df.shape[1]]
-                    hist_df.columns = cols_to_apply
-
-                # parse DateTime robustly (let pandas infer)
-                hist_df["DateTime"] = pd.to_datetime(hist_df["DateTime"], dayfirst=True, errors="coerce")
-                hist_df = hist_df.dropna(subset=["DateTime"])
-                if hist_df.empty:
-                    raise ValueError("No valid datetimes in historical CSV")
-
-                # create date_only column (avoid time-of-day / tz issues)
+                # make sure DateTime is timezone-naive python datetime
+                hist_df = hist_df.sort_values(by="DateTime").reset_index(drop=True)
+                # find most recent trading date strictly before today
                 hist_df["date_only"] = hist_df["DateTime"].dt.date
-
-                # get most recent trading date strictly before today (previous trading day)
-                available_dates = sorted(hist_df["date_only"].unique())
-                prev_dates = [d for d in available_dates if d < today_date]
+                prev_dates = [d for d in sorted(hist_df["date_only"].unique()) if d < today_date]
                 if prev_dates:
-                    prev_trading_date = prev_dates[-1]  # nearest prior trading day
+                    prev_trading_date = prev_dates[-1]
                     prev_rows = hist_df[hist_df["date_only"] == prev_trading_date]
                     prev_close_val = prev_rows.iloc[-1].get("Close")
                     prev_close = float(prev_close_val)
                 else:
-                    # no date < today found: use latest available close in file (best-effort)
+                    # fallback to last available close in file
                     prev_close = float(hist_df.iloc[-1]["Close"])
-
-                # store last hist_df for optional display later
-                last_hist_df = hist_df.copy()
+                prev_source = "historical_csv"
             except Exception as exc:
-                # on any parse error, fallback to LTP (already assigned)
-                # Optionally log a small debug message
-                # st.write(f"Warn: prev_close fetch failed for token {token}: {exc}")
+                # fallback: keep prev_close as ltp (already set), mark source
                 prev_close = prev_close if prev_close is not None else ltp
+                prev_source = f"fallback:{str(exc)[:120]}"
 
         prev_close_list.append(prev_close)
+        prev_source_list.append(prev_source)
 
-    # attach to df
     df["ltp"] = ltp_list
     df["prev_close"] = prev_close_list
+    df["prev_close_source"] = prev_source_list
 
 except Exception as e:
     st.error(f"⚠️ Error fetching holdings or prices: {e}")
@@ -263,10 +391,9 @@ except Exception as e:
 
 # ------------------ Final historical sample display (optional) ------------------
 try:
-    if 'last_hist_df' in locals() and last_hist_df is not None and last_hist_df.shape[1] >= 5:
-        sample = last_hist_df.head()
+    if last_hist_df is not None and last_hist_df.shape[0] > 0:
         st.write("Historical data sample (last fetched symbol):")
-        st.dataframe(sample)
+        st.dataframe(last_hist_df.head())
 except Exception:
     pass
 
@@ -414,7 +541,7 @@ if not losers.empty:
     st.table(losers[["symbol", "quantity", "avg_buy_price", "tsl_price", "realized_if_tsl_hit"]].sort_values(by="realized_if_tsl_hit").head(10))
 
 # ------------------ Positions & Risk Table ------------------
-display_cols = ["symbol", "quantity", "side", "avg_buy_price", "ltp", "prev_close", "invested_value", "current_value", "overall_pnl", "today_pnl",
+display_cols = ["symbol", "quantity", "side", "avg_buy_price", "ltp", "prev_close", "prev_close_source", "invested_value", "current_value", "overall_pnl", "today_pnl",
                 "capital_allocation_%", "initial_sl_price", "tsl_price", "initial_risk", "open_risk", "realized_if_tsl_hit"]
 for i in range(1, len(target_pcts) + 1):
     display_cols += [f"target_{i}_pct", f"target_{i}_price"]
