@@ -81,74 +81,72 @@ try:
     df = pd.DataFrame(rows)
 
     # ------------------ Function 1: Fetch LTP ------------------
-def fetch_ltp(client, token):
-    """Fetch live LTP from quotes API."""
-    try:
-        quote_resp = client.get_quotes(exchange="NSE", token=token)
-        if isinstance(quote_resp, dict):
-            ltp_val = quote_resp.get("ltp") or quote_resp.get("last_price") or quote_resp.get("lastTradedPrice")
-        else:
-            ltp_val = None
-        return float(ltp_val or 0.0)
-    except Exception:
-        return 0.0
-
-
-# ------------------ Function 2: Fetch Previous Close ------------------
-def fetch_prev_close(client, token, today_dt=None):
-    """Fetch robust previous close (prefer yesterday’s close, else last available)."""
-    if today_dt is None:
-        today_dt = datetime.now()
-    today_date = today_dt.date()
-
-    try:
-        from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
-        to_date = today_dt.strftime("%d%m%Y%H%M")
-        hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_date, to=to_date)
-
-        if not isinstance(hist_csv, str):
-            hist_csv = str(hist_csv)
-
-        hist_df = pd.read_csv(io.StringIO(hist_csv), header=None)
-
-        # Dynamic columns
-        if hist_df.shape[1] >= 6:
-            if hist_df.shape[1] == 7:
-                hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
+    def fetch_ltp(client, token):
+        """Fetch live LTP from quotes API."""
+        try:
+            quote_resp = client.get_quotes(exchange="NSE", token=token)
+            if isinstance(quote_resp, dict):
+                ltp_val = quote_resp.get("ltp") or quote_resp.get("last_price") or quote_resp.get("lastTradedPrice")
             else:
-                hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
-
-            # Robust datetime parsing
-            def try_parse(dt_str):
-                for fmt in ("%d-%m-%Y %H:%M", "%d-%m-%Y", "%Y-%m-%d %H:%M:%S", "%d%m%Y%H%M", "%Y-%m-%d"):
-                    try:
-                        return pd.to_datetime(dt_str, format=fmt, dayfirst=True)
-                    except Exception:
-                        continue
-                return pd.to_datetime(dt_str, dayfirst=True, errors='coerce')
-
-            hist_df["DateTime"] = hist_df["DateTime"].apply(try_parse)
-            hist_df = hist_df.dropna(subset=["DateTime"]).sort_values(by="DateTime")
-            hist_df["date_only"] = hist_df["DateTime"].dt.date
-
-            yesterday = today_date - timedelta(days=1)
-            # Prefer exact yesterday
-            yest_rows = hist_df[hist_df["date_only"] == yesterday]
-            if not yest_rows.empty:
-                return float(yest_rows.iloc[-1]["Close"])
-
-            # Else, last available before today
-            prev_days = hist_df[hist_df["date_only"] < today_date]
-            if not prev_days.empty:
-                return float(prev_days.iloc[-1]["Close"])
-
-            # Fallback: last available
-            return float(hist_df.iloc[-1]["Close"])
-        else:
+                ltp_val = None
+            return float(ltp_val or 0.0)
+        except Exception:
             return 0.0
-    except Exception:
-        return 0.0
 
+    # ------------------ Function 2: Fetch Previous Close ------------------
+    def fetch_prev_close(client, token, today_dt=None):
+        """Fetch robust previous close (prefer yesterday’s close, else last available)."""
+        if today_dt is None:
+            today_dt = datetime.now()
+        today_date = today_dt.date()
+
+        try:
+            from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
+            to_date = today_dt.strftime("%d%m%Y%H%M")
+            hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_date, to=to_date)
+
+            if not isinstance(hist_csv, str):
+                hist_csv = str(hist_csv)
+
+            hist_df = pd.read_csv(io.StringIO(hist_csv), header=None)
+
+            # Dynamic columns
+            if hist_df.shape[1] >= 6:
+                if hist_df.shape[1] == 7:
+                    hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
+                else:
+                    hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
+
+                # Robust datetime parsing
+                def try_parse(dt_str):
+                    for fmt in ("%d-%m-%Y %H:%M", "%d-%m-%Y", "%Y-%m-%d %H:%M:%S", "%d%m%Y%H%M", "%Y-%m-%d"):
+                        try:
+                            return pd.to_datetime(dt_str, format=fmt, dayfirst=True)
+                        except Exception:
+                            continue
+                    return pd.to_datetime(dt_str, dayfirst=True, errors='coerce')
+
+                hist_df["DateTime"] = hist_df["DateTime"].apply(try_parse)
+                hist_df = hist_df.dropna(subset=["DateTime"]).sort_values(by="DateTime")
+                hist_df["date_only"] = hist_df["DateTime"].dt.date
+
+                yesterday = today_date - timedelta(days=1)
+                # Prefer exact yesterday
+                yest_rows = hist_df[hist_df["date_only"] == yesterday]
+                if not yest_rows.empty:
+                    return float(yest_rows.iloc[-1]["Close"])
+
+                # Else, last available before today
+                prev_days = hist_df[hist_df["date_only"] < today_date]
+                if not prev_days.empty:
+                    return float(prev_days.iloc[-1]["Close"])
+
+                # Fallback: last available
+                return float(hist_df.iloc[-1]["Close"])
+            else:
+                return 0.0
+        except Exception:
+            return 0.0
 
     # ------------------ Usage Example ------------------
     st.info("Fetching live prices and previous close (robust logic).")
@@ -258,7 +256,6 @@ def fetch_prev_close(client, token, today_dt=None):
             }
 
     results = df.apply(calc_stops_targets, axis=1, result_type="expand")
-
     # results is a DataFrame with keys same as dict keys
     df = pd.concat([df, results], axis=1)
 
