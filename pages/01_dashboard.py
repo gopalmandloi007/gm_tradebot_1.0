@@ -128,7 +128,7 @@ try:
                 hist_df = hist_df.dropna(subset=["DateTime"]).sort_values(by="DateTime")
                 hist_df["date_only"] = hist_df["DateTime"].dt.date
 
-                yesterday = today_date - timedelta(days=1)
+                yesterday = today_date - timedelta(days=-1)
                 # Prefer exact yesterday
                 yest_rows = hist_df[hist_df["date_only"] == yesterday]
                 if not yest_rows.empty:
