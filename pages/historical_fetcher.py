@@ -8,44 +8,37 @@ import streamlit as st
 BASE_FILES = "https://app.definedgesecurities.com/public"
 BASE_DATA = "https://data.definedgesecurities.com/sds"
 MASTER_FILE = "nsecash.zip"
-TARGET_INDEXES = ["NIFTY 50", "NIFTY 500", "NIFTY MIDSML 400"]
+
+# Index name mapping to SYMBOL in master file
+TARGET_INDEXES = {
+    "NIFTY 50": "NIFTY",
+    "NIFTY 500": "NIFTY500",
+    "NIFTY MIDSML 400": "NIFTYMIDSMALL"
+}
 
 # ------------------ HELPERS ------------------
 
 def download_master(segment_zip: str) -> pd.DataFrame:
-    """Download & extract master file from Definedge"""
     url = f"{BASE_FILES}/{segment_zip}"
     r = requests.get(url, timeout=30)
     r.raise_for_status()
     with zipfile.ZipFile(io.BytesIO(r.content)) as z:
         csv_name = z.namelist()[0]
         with z.open(csv_name) as f:
-            # Auto detect if header exists, else assign
-            try:
-                df = pd.read_csv(f)
-                if "COMPANY" not in df.columns:
-                    df.columns = ["SEGMENT","TOKEN","SYMBOL","TRADINGSYM","INSTRUMENT","EXPIRY",
-                                  "TICKSIZE","LOTSIZE","OPTIONTYPE","STRIKE","PRICEPREC","MULTIPLIER",
-                                  "ISIN","PRICEMULT","COMPANY"]
-            except:
-                # fallback if file is weird
-                df = pd.read_csv(f, header=None)
-                df.columns = ["SEGMENT","TOKEN","SYMBOL","TRADINGSYM","INSTRUMENT","EXPIRY",
-                              "TICKSIZE","LOTSIZE","OPTIONTYPE","STRIKE","PRICEPREC","MULTIPLIER",
-                              "ISIN","PRICEMULT","COMPANY"]
+            df = pd.read_csv(f, header=None)
+            df.columns = ["SEGMENT","TOKEN","SYMBOL","TRADINGSYM","INSTRUMENT","EXPIRY",
+                          "TICKSIZE","LOTSIZE","OPTIONTYPE","STRIKE","PRICEPREC","MULTIPLIER",
+                          "ISIN","PRICEMULT","COMPANY"]
     return df
 
-def get_token(df: pd.DataFrame, company_name: str) -> str:
-    """Get token of given index/company from master"""
-    # Filter only NSE segment
+def get_token_by_symbol(df: pd.DataFrame, symbol: str) -> str:
     df_nse = df[df["SEGMENT"].str.upper() == "NSE"]
-    row = df_nse[df_nse["COMPANY"].str.upper() == company_name.upper()]
+    row = df_nse[df_nse["SYMBOL"].str.upper() == symbol.upper()]
     if row.empty:
-        raise ValueError(f"❌ Token not found for {company_name}")
+        raise ValueError(f"❌ Token not found for {symbol}")
     return str(row.iloc[0]["TOKEN"])
 
 def fetch_history(session_key: str, segment: str, token: str, timeframe: str, start: str, end: str) -> pd.DataFrame:
-    """Fetch historical OHLCV from Definedge"""
     url = f"{BASE_DATA}/history/{segment}/{token}/{timeframe}/{start}/{end}"
     headers = {"Authorization": session_key}
     r = requests.get(url, headers=headers, timeout=60)
@@ -72,17 +65,17 @@ def main():
     to = end_date.strftime("%d%m%Y1530")
 
     all_data = {}
-    for index in TARGET_INDEXES:
+    for index_name, symbol in TARGET_INDEXES.items():
         try:
-            token = get_token(master_df, index)
-            st.write(f"✅ Fetching {index} (Token: {token}) ...")
+            token = get_token_by_symbol(master_df, symbol)
+            st.write(f"✅ Fetching {index_name} (Symbol: {symbol}, Token: {token}) ...")
             df_hist = fetch_history(session_key, "NSE", token, "day", frm, to)
-            all_data[index] = df_hist
-            csv_name = f"{index.replace(' ', '_')}.csv"
+            all_data[index_name] = df_hist
+            csv_name = f"{index_name.replace(' ', '_')}.csv"
             df_hist.to_csv(csv_name, index=False)
             st.success(f"📂 Saved {csv_name}")
         except Exception as e:
-            st.error(f"⚠️ Error for {index}: {e}")
+            st.error(f"⚠️ Error for {index_name}: {e}")
 
     if "NIFTY 50" in all_data:
         st.dataframe(all_data["NIFTY 50"].tail())
