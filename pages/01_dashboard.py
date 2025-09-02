@@ -80,76 +80,91 @@ try:
 
     df = pd.DataFrame(rows)
 
-    # ------------------ Fetch LTP + robust prev_close per symbol ------------------
-    st.info("Fetching live prices and previous close (robust logic).")
-    ltp_list = []
-    prev_close_list = []
-    today_dt = datetime.now()
+    # ------------------ Function 1: Fetch LTP ------------------
+def fetch_ltp(client, token):
+    """Fetch live LTP from quotes API."""
+    try:
+        quote_resp = client.get_quotes(exchange="NSE", token=token)
+        if isinstance(quote_resp, dict):
+            ltp_val = quote_resp.get("ltp") or quote_resp.get("last_price") or quote_resp.get("lastTradedPrice")
+        else:
+            ltp_val = None
+        return float(ltp_val or 0.0)
+    except Exception:
+        return 0.0
+
+
+# ------------------ Function 2: Fetch Previous Close ------------------
+def fetch_prev_close(client, token, today_dt=None):
+    """Fetch robust previous close (prefer yesterday’s close, else last available)."""
+    if today_dt is None:
+        today_dt = datetime.now()
     today_date = today_dt.date()
 
-    for idx, row in df.iterrows():
-        token = row.get("token")
-        # safe quote fetch
-        try:
-            quote_resp = client.get_quotes(exchange="NSE", token=token)
-            if isinstance(quote_resp, dict):
-                ltp_val = quote_resp.get("ltp") or quote_resp.get("last_price") or quote_resp.get("lastTradedPrice")
+    try:
+        from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
+        to_date = today_dt.strftime("%d%m%Y%H%M")
+        hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_date, to=to_date)
+
+        if not isinstance(hist_csv, str):
+            hist_csv = str(hist_csv)
+
+        hist_df = pd.read_csv(io.StringIO(hist_csv), header=None)
+
+        # Dynamic columns
+        if hist_df.shape[1] >= 6:
+            if hist_df.shape[1] == 7:
+                hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
             else:
-                ltp_val = None
-            ltp = float(ltp_val or 0.0)
-        except Exception:
-            ltp = 0.0
-        ltp_list.append(ltp)
+                hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
 
-        # robust prev_close: prefer the last FULL trading day close (date < today)
-        prev_close = ltp
-        try:
-            from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
-            to_date = today_dt.strftime("%d%m%Y%H%M")
-            hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_date, to=to_date)
+            # Robust datetime parsing
+            def try_parse(dt_str):
+                for fmt in ("%d-%m-%Y %H:%M", "%d-%m-%Y", "%Y-%m-%d %H:%M:%S", "%d%m%Y%H%M", "%Y-%m-%d"):
+                    try:
+                        return pd.to_datetime(dt_str, format=fmt, dayfirst=True)
+                    except Exception:
+                        continue
+                return pd.to_datetime(dt_str, dayfirst=True, errors='coerce')
 
-            # some brokers return CSV bytes or string; handle both
-            if not isinstance(hist_csv, str):
-                hist_csv = str(hist_csv)
+            hist_df["DateTime"] = hist_df["DateTime"].apply(try_parse)
+            hist_df = hist_df.dropna(subset=["DateTime"]).sort_values(by="DateTime")
+            hist_df["date_only"] = hist_df["DateTime"].dt.date
 
-            hist_df = pd.read_csv(io.StringIO(hist_csv), header=None)
-            # dynamic columns
-            if hist_df.shape[1] >= 6:
-                if hist_df.shape[1] == 7:
-                    hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
-                else:
-                    hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
+            yesterday = today_date - timedelta(days=1)
+            # Prefer exact yesterday
+            yest_rows = hist_df[hist_df["date_only"] == yesterday]
+            if not yest_rows.empty:
+                return float(yest_rows.iloc[-1]["Close"])
 
-                # try multiple date formats
-                def try_parse(dt_str):
-                    for fmt in ("%d-%m-%Y %H:%M", "%d-%m-%Y", "%Y-%m-%d %H:%M:%S", "%d%m%Y%H%M", "%Y-%m-%d"): 
-                        try:
-                            return pd.to_datetime(dt_str, format=fmt, dayfirst=True)
-                        except Exception:
-                            continue
-                    # fallback
-                    return pd.to_datetime(dt_str, dayfirst=True, errors='coerce')
+            # Else, last available before today
+            prev_days = hist_df[hist_df["date_only"] < today_date]
+            if not prev_days.empty:
+                return float(prev_days.iloc[-1]["Close"])
 
-                hist_df["DateTime"] = hist_df["DateTime"].apply(try_parse)
-                hist_df = hist_df.dropna(subset=["DateTime"]).sort_values(by="DateTime")
-                hist_df["date_only"] = hist_df["DateTime"].dt.date
+            # Fallback: last available
+            return float(hist_df.iloc[-1]["Close"])
+        else:
+            return 0.0
+    except Exception:
+        return 0.0
 
-                # pick last date strictly before today
-                prev_days = hist_df[hist_df["date_only"] < today_date]
-                if not prev_days.empty:
-                    prev_close = float(prev_days.iloc[-1]["Close"])
-                else:
-                    # if no earlier date (maybe today only), fallback to last available close (may be today's partial)
-                    prev_close = float(hist_df.iloc[-1]["Close"])
-            else:
-                prev_close = ltp
-        except Exception:
-            prev_close = ltp
 
-        prev_close_list.append(prev_close)
+# ------------------ Usage Example ------------------
+st.info("Fetching live prices and previous close (robust logic).")
+ltp_list, prev_close_list = [], []
+today_dt = datetime.now()
 
-    df["ltp"] = ltp_list
-    df["prev_close"] = prev_close_list
+for idx, row in df.iterrows():
+    token = row.get("token")
+    ltp = fetch_ltp(client, token)
+    prev_close = fetch_prev_close(client, token, today_dt)
+
+    ltp_list.append(ltp)
+    prev_close_list.append(prev_close)
+
+df["ltp"] = ltp_list
+df["prev_close"] = prev_close_list
 
     # ------------------ Basic P&L + allocation ------------------
     df["invested_value"] = df["avg_buy_price"] * df["quantity"]
