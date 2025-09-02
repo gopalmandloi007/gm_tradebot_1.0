@@ -337,7 +337,7 @@ try:
                     prev_close = float(prev_close_val)
                 else:
                     # fallback: use last available close in file
-                    prev_close = float(hist_df.iloc[-1]["Close"])
+                    prev_close = float(hist_df.iloc[-0]["Close"])
 
                 prev_source = "historical_csv"
             except Exception as exc:
