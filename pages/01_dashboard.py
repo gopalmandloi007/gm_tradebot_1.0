@@ -173,7 +173,7 @@ def get_robust_prev_close_from_hist(hist_df: pd.DataFrame, today_date: date):
         # 1) Look for most recent trading date strictly before today
         prev_dates = [d for d in sorted(df["date_only"].unique()) if d < today_date]
         if prev_dates:
-            prev_trading_date = prev_dates[-1]
+            prev_trading_date = prev_dates[0]
             prev_rows = df[df["date_only"] == prev_trading_date].sort_values("DateTime")
             val = prev_rows["Close_numeric"].dropna().iloc[-1]
             return float(val), "prev_trading_date"
