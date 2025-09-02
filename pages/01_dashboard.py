@@ -22,7 +22,7 @@ def fetch_ltp(client, segment, token):
         st.warning(f"LTP fetch failed for {token}: {e}")
         return 0.0
 
-def fetch_prev_close(client, segment, token, symbol, max_days_lookback=10):
+def fetch_prev_close(client, segment, token, tradingsymbol, max_days_lookback=10):
     closes = []
     today = datetime.now()
     try:
@@ -50,7 +50,7 @@ def fetch_prev_close(client, segment, token, symbol, max_days_lookback=10):
 
     # Debug raw closes
     if show_debug:
-        st.write(f"🔎 {symbol} ({token}) closes → {closes}")
+        st.write(f"🔎 {tradingsymbol} ({token}) closes → {closes}")
 
     return closes[-2] if len(closes) >= 2 else 0.0
 
@@ -64,7 +64,7 @@ try:
     df = pd.DataFrame(holdings_resp["data"])
 
     # Ensure required columns
-    for col in ["symbol", "segment", "token", "quantity", "avg_price"]:
+    for col in ["tradingsymbol", "segment", "token", "quantity", "avg_price"]:
         if col not in df.columns:
             st.error(f"Missing column in holdings: {col}")
             st.stop()
@@ -75,7 +75,7 @@ try:
 
     # Fetch LTP & Prev Close
     df["ltp"] = df.apply(lambda r: fetch_ltp(client, r["segment"], r["token"]), axis=1)
-    df["prev_close"] = df.apply(lambda r: fetch_prev_close(client, r["segment"], r["token"], r["symbol"]), axis=1)
+    df["prev_close"] = df.apply(lambda r: fetch_prev_close(client, r["segment"], r["token"], r["tradingsymbol"]), axis=1)
 
     # Calculations
     df["invested"] = df["quantity"] * df["avg_price"]
