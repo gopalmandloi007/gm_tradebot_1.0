@@ -81,73 +81,60 @@ try:
     df = pd.DataFrame(rows)
 
     # ------------------ Function 1: Fetch LTP ------------------
-    def fetch_ltp(client, token):
-        """Fetch live LTP from quotes API."""
-        try:
-            quote_resp = client.get_quotes(exchange="NSE", token=token)
-            if isinstance(quote_resp, dict):
-                ltp_val = quote_resp.get("ltp") or quote_resp.get("last_price") or quote_resp.get("lastTradedPrice")
-            else:
-                ltp_val = None
-            return float(ltp_val or 0.0)
-        except Exception:
+def fetch_ltp(client, token):
+    """Fetch live LTP from quotes API."""
+    try:
+        quote_resp = client.get_quotes(exchange="NSE", token=token)
+        if isinstance(quote_resp, dict):
+            ltp_val = (
+                quote_resp.get("ltp")
+                or quote_resp.get("last_price")
+                or quote_resp.get("lastTradedPrice")
+            )
+        else:
+            ltp_val = None
+        return float(ltp_val or 0.0)
+    except Exception:
+        return 0.0
+
+
+# ------------------ Function 2: Fetch Previous Close ------------------
+def fetch_prev_close(client, token, today_dt=None):
+    """Fetch previous close (yesterday's close price)."""
+    if today_dt is None:
+        today_dt = datetime.now()
+
+    try:
+        # Yesterday’s date string
+        yesterday = today_dt.date() - timedelta(days=1)
+        date_str = yesterday.strftime("%Y%m%d")
+
+        from_time = f"{date_str}0000"
+        to_time = f"{date_str}1530"
+
+        # Get historical CSV (daily data)
+        hist_csv = client.historical_csv(
+            segment="NSE",
+            token=token,
+            timeframe="day",
+            frm=from_time,
+            to=to_time,
+        )
+
+        if not isinstance(hist_csv, str):
+            hist_csv = str(hist_csv)
+
+        hist_df = pd.read_csv(io.StringIO(hist_csv), header=None)
+
+        if hist_df.empty:
             return 0.0
 
-    # ------------------ Function 2: Fetch Previous Close ------------------
-    def fetch_prev_close(client, token, today_dt=None):
-        """Fetch previous close (prefer yesterday’s close, else last available)."""
-        if today_dt is None:
-            today_dt = datetime.now()
-        today_date = today_dt.date()
+        # Definedge format -> usually [date, open, high, low, close, volume]
+        prev_close_val = hist_df.iloc[-1, 4]  # column index 4 = Close
+        return float(prev_close_val)
+    except Exception:
+        return 0.0
 
-        try:
-            from_time = f"{date_str}0000"
-            to_time = f"{date_str}1530"
-            hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_time, to=to_time)
-
-            if not isinstance(hist_csv, str):
-                hist_csv = str(hist_csv)
-
-            hist_df = pd.read_csv(io.StringIO(hist_csv), header=None)
-
-            # Dynamic columns
-            if hist_df.shape[1] >= 6:
-                if hist_df.shape[1] == 7:
-                    hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
-                else:
-                    hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
-
-                # सीधे ddMMyyyyHHmm फॉर्मेट का उपयोग
-                def parse_date(dt_str):
-                    try:
-                        return pd.to_datetime(dt_str, format='%d%m%Y%H%M')
-                    except Exception:
-                        return pd.to_datetime(dt_str, errors='coerce')
-
-                hist_df["DateTime"] = hist_df["DateTime"].apply(parse_date)
-                hist_df = hist_df.dropna(subset=["DateTime"]).sort_values(by="DateTime")
-                hist_df["date_only"] = hist_df["DateTime"].dt.date
-
-                yesterday = today_date - timedelta(days=-1)
-                # Prefer exact yesterday
-                yest_rows = hist_df[hist_df["date_only"] == yesterday]
-                if not yest_rows.empty:
-                    return float(yest_rows.iloc[-1]["Close"])
-
-                # Else, last available before today
-                prev_days = hist_df[hist_df["date_only"] < today_date]
-                if not prev_days.empty:
-                    return float(prev_days.iloc[-1]["Close"])
-
-                # Fallback: last available
-                return float(hist_df.iloc[-1]["Close"])
-            else:
-                return 0.0
-        except Exception:
-            return 0.0
-
-        st.write("Historical DataFrame:")
-        st.dataframe(hist_df)
 
     # ------------------ Usage Example ------------------
     st.info("Fetching live prices and previous close (robust logic).")
