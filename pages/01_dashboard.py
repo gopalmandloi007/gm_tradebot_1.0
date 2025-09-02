@@ -199,27 +199,27 @@ try:
         st.stop()
 
     rows = []
-    for item in some_list:  # jaha bhi aap loop kar rahe ho
-    if isinstance(item, dict):
-        exchange = item.get("exchange")
+    for item in response["data"]:
+    exchange = None
+    symbol = None
 
-        # kabhi kabhi "tradingsymbol" nested dict me ho sakta hai
-        if not exchange:
-            ts = item.get("tradingsymbol")
-            if isinstance(ts, dict):
-                exchange = ts.get("exchange")
-            else:
-                exchange = None
+    ts_list = item.get("tradingsymbol")
+    if isinstance(ts_list, list):  # jab tradingsymbol ek list hai
+        # Prefer NSE otherwise first entry le lo
+        nse_entry = next((ts for ts in ts_list if ts.get("exchange") == "NSE"), None)
+        if nse_entry:
+            exchange = nse_entry.get("exchange")
+            symbol = nse_entry.get("tradingsymbol")
+        else:
+            # fallback: first dict in list
+            exchange = ts_list[0].get("exchange")
+            symbol = ts_list[0].get("tradingsymbol")
+    elif isinstance(ts_list, dict):  # kabhi kabhi dict bhi aa sakta hai
+        exchange = ts_list.get("exchange")
+        symbol = ts_list.get("tradingsymbol")
 
-    elif isinstance(item, list) and len(item) > 0 and isinstance(item[0], dict):
-        # agar item ek list hai to uske pehle dict element se exchange nikalo
-        sub_item = item[0]
-        exchange = sub_item.get("exchange") or (
-            sub_item.get("tradingsymbol", {}) if isinstance(sub_item.get("tradingsymbol"), dict) else None
-        )
+    st.write("Exchange:", exchange, "Symbol:", symbol)
 
-    else:
-        exchange = None
 
         # core fields
         avg_buy_price = float(item.get("avg_buy_price") or 0)
