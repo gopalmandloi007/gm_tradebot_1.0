@@ -164,6 +164,37 @@ except Exception as e:
     st.error(f"⚠️ Error fetching data: {e}")
     st.stop()
 
+# Inside your for loop, after fetching historical CSV data:
+try:
+    if hist_df.shape[1] >= 6:
+        # Parse date columns
+        def try_parse(dt_str):
+            for fmt in ("%d-%m-%Y %H:%M", "%d-%m-%Y", "%Y-%m-%d %H:%M:%S", "%d%m%Y%H%M", "%Y-%m-%d"): 
+                try:
+                    return pd.to_datetime(dt_str, format=fmt, dayfirst=True)
+                except:
+                    continue
+            return pd.to_datetime(dt_str, dayfirst=True, errors='coerce')
+
+        hist_df["DateTime"] = hist_df["DateTime"].apply(try_parse)
+        hist_df = hist_df.dropna(subset=["DateTime"]).sort_values(by="DateTime").reset_index(drop=True)
+        hist_df["date_only"] = hist_df["DateTime"].dt.date
+
+        # Filter for dates before today
+        prev_days = hist_df[hist_df["date_only"] < today_date]
+
+        if not prev_days.empty:
+            # Get the last available close before today
+            prev_close = float(prev_days.iloc[-1]["Close"])
+        else:
+            # fallback: if no previous days, try to get the last row (most recent data)
+            prev_close = float(hist_df.iloc[-1]["Close"])
+    else:
+        prev_close = ltp
+except Exception:
+    # fallback in case of error
+    prev_close = ltp
+
 # ------------------ Calculate P&L and other metrics ------------------
 # All these calculations should be **outside** the loop that fetches prices
 df["invested_value"] = df["avg_buy_price"] * df["quantity"]
