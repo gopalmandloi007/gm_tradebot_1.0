@@ -1,7 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import io
 from datetime import datetime, timedelta, date
 import plotly.graph_objects as go
 import traceback
@@ -17,16 +15,56 @@ DEFAULT_TARGETS = [10, 20, 30, 40]
 
 # ------------------ Helper: parse Definedge CSV (headerless) ------------------
 def parse_definedge_csv(raw_text, timeframe="day"):
-    # ... (same as your original parse_definedge_csv)
-    # [UNCHANGED CODE ABOVE]
-    # keep full implementation as in your file
-    # ...
-    return df, None
+    # TODO: implement real parsing for Definedge CSV
+    # must return DataFrame with DateTime + OHLCV
+    return None, "not implemented"
 
 # ------------------ Robust prev-close helper ------------------
 def get_robust_prev_close_from_hist(hist_df: pd.DataFrame, today_date: date):
-    # ... (same as your original get_robust_prev_close_from_hist)
-    return None, "not implemented here for brevity"
+    """
+    Return (prev_close, reason) from a historical DF.
+    Logic:
+      1. Pick last trading day strictly before today.
+      2. Else dedupe closes, return second last unique.
+      3. Else fallback to last close.
+    """
+    try:
+        if "DateTime" not in hist_df.columns:
+            return None, "no DateTime col"
+        if "Close" not in hist_df.columns:
+            for alt in ["close", "C4", "Last", "last"]:
+                if alt in hist_df.columns:
+                    hist_df = hist_df.rename(columns={alt: "Close"})
+                    break
+            if "Close" not in hist_df.columns:
+                return None, "no Close col"
+
+        df = hist_df.dropna(subset=["DateTime"]).copy()
+        if df.empty:
+            return None, "empty hist"
+        df["date_only"] = df["DateTime"].dt.date
+        df["Close_numeric"] = pd.to_numeric(df["Close"], errors="coerce")
+
+        prev_dates = [d for d in sorted(df["date_only"].unique()) if d < today_date]
+        if prev_dates:
+            prev_trading_date = prev_dates[-1]
+            prev_rows = df[df["date_only"] == prev_trading_date].sort_values("DateTime")
+            val = prev_rows["Close_numeric"].dropna().iloc[-1]
+            return float(val), "prev_trading_date"
+
+        closes = df["Close_numeric"].dropna().tolist()
+        if not closes:
+            return None, "no closes"
+        seen, dedup = set(), []
+        for v in closes:
+            if v not in seen:
+                dedup.append(v)
+                seen.add(v)
+        if len(dedup) >= 2:
+            return float(dedup[-2]), "dedup_second_last"
+        return float(closes[-1]), "last_available"
+    except Exception as exc:
+        return None, f"error:{str(exc)[:120]}"
 
 # ------------------ Client check ------------------
 client = st.session_state.get("client")
@@ -34,13 +72,12 @@ if not client:
     st.error("⚠️ Not logged in. Please login first from the Login page.")
     st.stop()
 
-# ------------------ Sidebar (user controls) ------------------
+# ------------------ Sidebar ------------------
 st.sidebar.header("⚙️ Dashboard Settings & Risk")
 capital = st.sidebar.number_input("Total Capital (₹)", value=DEFAULT_TOTAL_CAPITAL, step=10000)
 initial_sl_pct = st.sidebar.number_input("Initial Stop Loss (%)", value=DEFAULT_INITIAL_SL_PCT, min_value=0.1, max_value=50.0, step=0.1)/100
 targets_input = st.sidebar.text_input("Targets % (comma separated)", ",".join(map(str, DEFAULT_TARGETS)))
 
-# ------------------ Parse targets ------------------
 try:
     target_pcts = sorted([max(0.0, float(t.strip())/100.0) for t in targets_input.split(",") if t.strip()])
     if not target_pcts:
@@ -50,6 +87,8 @@ except Exception:
     target_pcts = [t/100.0 for t in DEFAULT_TARGETS]
 
 trailing_thresholds = target_pcts
+auto_refresh = st.sidebar.checkbox("Auto-refresh LTP on page interaction", value=False)
+show_actions = st.sidebar.checkbox("Show Action Buttons (Square-off / Place SL)", value=False)
 
 # ------------------ Fetch holdings ------------------
 try:
@@ -65,64 +104,68 @@ try:
 
     rows = []
     for item in holdings:
-        # parse holding details ... (same as your original)
-        # build rows list
-        pass
+        try:
+            avg_buy_price = float(item.get("avg_buy_price") or 0)
+        except Exception:
+            avg_buy_price = 0.0
+        qty = sum(float(item.get(k) or 0) for k in ["dp_qty", "t1_qty", "holding_used"])
+
+        rows.append({
+            "symbol": item.get("tradingsymbol"),
+            "token": item.get("token"),
+            "avg_buy_price": avg_buy_price,
+            "quantity": int(qty),
+            "product_type": item.get("product_type", "")
+        })
 
     df = pd.DataFrame(rows)
+    if df.empty:
+        st.warning("⚠️ No NSE holdings found.")
+        st.stop()
 
-    # ------------------ Fetch LTP + robust prev_close per symbol ------------------
+    # ------------------ Fetch LTP + prev_close ------------------
     st.info("Fetching live prices and previous close (robust logic).")
     ltp_list, prev_close_list, prev_source_list = [], [], []
     today_dt, today_date = datetime.now(), datetime.now().date()
-
-    POSSIBLE_PREV_KEYS = ["prev_close", "previous_close", "previousClose", "previousClosePrice", "prevClose",
-        "prevclose", "previousclose", "prev_close_price", "yesterdayClose", "previous_close_price",
-        "prev_close_val", "previous_close_val", "yesterday_close"]
+    POSSIBLE_PREV_KEYS = ["prev_close","previous_close","previousClose","previousClosePrice","prevClose","prevclose","previousclose","prev_close_price","yesterdayClose","previous_close_val","yesterday_close"]
 
     last_hist_df = None
-
-    for idx, row in df.iterrows():
-        token, symbol = row.get("token"), row.get("symbol")
-        prev_close_from_quote, ltp = None, 0.0
-
-        # 1) Try quote
+    for _, row in df.iterrows():
+        token, symbol = row["token"], row["symbol"]
+        ltp, prev_close_from_quote = 0.0, None
         try:
-            quote_resp = client.get_quotes(exchange="NSE", token=token)
-            if isinstance(quote_resp, dict):
-                ltp_val = (quote_resp.get("ltp") or quote_resp.get("last_price") or
-                           quote_resp.get("lastTradedPrice") or quote_resp.get("lastPrice") or quote_resp.get("ltpPrice"))
+            quote = client.get_quotes(exchange="NSE", token=token)
+            if isinstance(quote, dict):
+                ltp_val = (quote.get("ltp") or quote.get("last_price") or quote.get("lastTradedPrice") or quote.get("lastPrice") or quote.get("ltpPrice"))
                 ltp = float(ltp_val or 0.0)
                 for k in POSSIBLE_PREV_KEYS:
-                    if k in quote_resp and quote_resp.get(k):
+                    if k in quote and quote.get(k):
                         try:
-                            prev_close_from_quote = float(str(quote_resp.get(k)).replace(",", ""))
+                            prev_close_from_quote = float(str(quote.get(k)).replace(",", ""))
                             break
                         except Exception:
                             continue
         except Exception:
             pass
 
-        # 2) Assign prev_close based on logic
         if prev_close_from_quote is not None:
             prev_close, prev_source = prev_close_from_quote, "quote"
         else:
-            # fallback to historical
             try:
                 from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
                 to_date = today_dt.strftime("%d%m%Y%H%M")
                 hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_date, to=to_date)
                 hist_df, err = parse_definedge_csv(hist_csv, timeframe="day")
                 if hist_df is None:
-                    raise Exception(f"parse_definedge_csv failed: {err}")
+                    raise Exception(err)
                 last_hist_df = hist_df.copy()
                 prev_close_val, reason = get_robust_prev_close_from_hist(hist_df, today_date)
                 if prev_close_val is not None:
-                    prev_close, prev_source = float(prev_close_val), f"historical_csv:{reason}"
+                    prev_close, prev_source = prev_close_val, f"historical_csv:{reason}"
                 else:
                     prev_close, prev_source = ltp, f"historical_fallback:{reason}"
             except Exception as exc:
-                prev_close, prev_source = ltp, f"fallback_error:{str(exc)[:120]}"
+                prev_close, prev_source = ltp, f"fallback_error:{str(exc)[:80]}"
 
         ltp_list.append(ltp)
         prev_close_list.append(prev_close)
@@ -133,81 +176,13 @@ try:
     df["prev_close_source"] = prev_source_list
 
 except Exception as e:
-    st.error(f"⚠️ Error fetching holdings or prices: {e}")
+    st.error(f"⚠️ Error fetching holdings/prices: {e}")
     st.text(traceback.format_exc())
     st.stop()
 
-# ...
-# KEEP REST OF YOUR ORIGINAL CODE (PnL calcs, stops/targets, visuals, exports)
-# ...
+# ------------------ Continue with PnL, risk calcs, visuals, exports ------------------
+# (unchanged from your working logic — keep your calc_stops_targets, metrics, visuals, etc.)
 
-
-# ------------------ Robust prev-close helper ------------------
-def get_robust_prev_close_from_hist(hist_df: pd.DataFrame, today_date: date):
-    """
-    Given a parsed historical DataFrame (with DateTime and Close),
-    return (prev_close_value_or_None, reason_string).
-    Logic:
-      1) Prefer most recent trading date strictly before today (last row of that date).
-      2) If no such prior date (e.g. file only contains today's data), dedupe Close values
-         (keeping order) and pick second-last distinct close if available.
-      3) Else fall back to last available close.
-    """
-    try:
-        # ensure DateTime and Close present & clean
-        if "DateTime" not in hist_df.columns:
-            return None, "no DateTime column"
-        if "Close" not in hist_df.columns:
-            # attempt common alt names
-            for alt in ["close", "C4", "Last", "last"]:
-                if alt in hist_df.columns:
-                    hist_df = hist_df.rename(columns={alt: "Close"})
-                    break
-            if "Close" not in hist_df.columns:
-                return None, "no Close column"
-
-        df = hist_df.dropna(subset=["DateTime"]).copy()
-        if df.empty:
-            return None, "no valid DateTime rows"
-
-        df["date_only"] = df["DateTime"].dt.date
-        # coerce Close numeric safely
-        df["Close_numeric"] = pd.to_numeric(df["Close"], errors="coerce")
-
-        # 1) Look for most recent trading date strictly before today
-        prev_dates = [d for d in sorted(df["date_only"].unique()) if d < today_date]
-        if prev_dates:
-            prev_trading_date = prev_dates[-1]
-            prev_rows = df[df["date_only"] == prev_trading_date].sort_values("DateTime")
-            # take last available close for that day
-            val = prev_rows["Close_numeric"].dropna().iloc[-1]
-            return float(val), "prev_trading_date"
-        else:
-            # 2) No prior date. Try deduplicated sequence approach:
-            closes_series = df["Close_numeric"].dropna().tolist()
-            if not closes_series:
-                return None, "no numeric closes"
-            # dedupe while preserving order
-            seen = set()
-            dedup = []
-            for v in closes_series:
-                if v not in seen:
-                    dedup.append(v)
-                    seen.add(v)
-            if len(dedup) >= 2:
-                # second last unique close is likely "yesterday close"
-                return float(dedup[-2]), "dedup_second_last"
-            else:
-                # fallback to last close available
-                return float(closes_series[-1]), "last_available"
-    except Exception as exc:
-        return None, f"error:{str(exc)[:120]}"
-
-# ------------------ Client check ------------------
-client = st.session_state.get("client")
-if not client:
-    st.error("⚠️ Not logged in. Please login first from the Login page.")
-    st.stop()
 
 # ------------------ Sidebar (user controls) ------------------
 st.sidebar.header("⚙️ Dashboard Settings & Risk")
