@@ -306,7 +306,7 @@ try:
         st.table(losers[["symbol", "quantity", "avg_buy_price", "tsl_price", "realized_if_tsl_hit"]].sort_values(by="realized_if_tsl_hit").head(10))
 
     # ------------------ Positions & Risk Table ------------------
-    display_cols = ["symbol", "quantity", "side", "avg_buy_price", "ltp", "invested_value", "current_value", "overall_pnl", "today_pnl",
+    display_cols = ["symbol", "quantity", "side", "avg_buy_price", "ltp", "prev_close", "invested_value", "current_value", "overall_pnl", "today_pnl",
                     "capital_allocation_%", "initial_sl_price", "tsl_price", "initial_risk", "open_risk", "realized_if_tsl_hit"]
     # add target columns
     for i in range(1, len(target_pcts) + 1):
