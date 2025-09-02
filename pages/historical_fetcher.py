@@ -1,96 +1,88 @@
 import streamlit as st
 import pandas as pd
-import io
+import io, zipfile
 from datetime import datetime, timedelta
-import zipfile
+import traceback
 
 st.set_page_config(layout="wide")
 st.title("📥 Historical OHLCV Download — NSE Stocks (Daily)")
 
-# ------------------------- Helper: Clean & Parse Historical CSV -------------------------
-def clean_hist_csv(hist_csv: str) -> pd.DataFrame:
+# ------------------ Utilities ------------------
+def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
     if not hist_csv or not hist_csv.strip():
         return pd.DataFrame()
-    df = pd.read_csv(io.StringIO(hist_csv), header=None)
-    # Map columns: DateTime, Open, High, Low, Close, Volume (7th optional)
-    if df.shape[1] == 6:
-        df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
-    elif df.shape[1] >= 7:
-        df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
+    lines = hist_csv.strip().splitlines()
+    if not lines:
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(io.StringIO(hist_csv), header=None)
+    except Exception:
+        try:
+            df = pd.read_csv(io.StringIO(hist_csv), header=None, delim_whitespace=True)
+        except:
+            return pd.DataFrame()
+    # Assign columns
+    if df.shape[1] >= 6:
+        if df.shape[1] == 7:
+            df.columns = ["DateTime","Open","High","Low","Close","Volume","OI"]
+        else:
+            df.columns = ["DateTime","Open","High","Low","Close","Volume"]
     else:
         return pd.DataFrame()
     # Clean DateTime strings
-    df["DateTime"] = df["DateTime"].astype(str).str.strip().str.replace(r'\.0+$', '', regex=True)
-    df["DateTime"] = pd.to_datetime(df["DateTime"], format="%d%m%Y%H%M", errors="coerce")
+    df["DateTime"] = pd.to_datetime(df["DateTime"].astype(str).str.strip(), format="%d%m%Y%H%M", errors="coerce")
     df = df.dropna(subset=["DateTime"])
-    # Create calendar Date
-    df["Date"] = df["DateTime"].dt.date
-    return df
+    for col in ["Open","High","Low","Close","Volume"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    # Keep last row per day
+    df["Date"] = df["DateTime"].dt.normalize()
+    df = df.sort_values("DateTime").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
+    df["DateStr"] = df["Date"].dt.strftime("%Y-%m-%d")
+    return df[["DateTime","Date","DateStr","Open","High","Low","Close","Volume"]]
 
-# ------------------------- Reindex to full calendar (deduplicate first) -------------------------
-def reindex_calendar(df: pd.DataFrame):
-    if df.empty:
-        return df
-    # Deduplicate by day (keep last intraday row)
-    df = df.sort_values("DateTime").drop_duplicates(subset=["Date"], keep="last")
-    # Full calendar index
-    full_idx = pd.date_range(df["Date"].min(), df["Date"].max(), freq="D")
-    df = df.set_index("Date").reindex(full_idx).rename_axis("Date").reset_index()
-    return df
-
-# ------------------------- Fetch & Prepare CSV for Multiple Symbols -------------------------
-def fetch_sample_historical(client, symbols, segment="NSE", days_back=365):
-    csv_buffers = {}
+def fetch_historical(client, segment, token, days):
     today = datetime.today()
-    frm = (today - timedelta(days=days_back)).strftime("%d%m%Y%H%M")
+    frm = (today - timedelta(days=days+30)).strftime("%d%m%Y%H%M")
     to = today.strftime("%d%m%Y%H%M")
+    try:
+        raw = client.historical_csv(segment=segment, token=token, timeframe="day", frm=frm, to=to)
+    except Exception as e:
+        st.warning(f"Failed API for token {token}: {e}")
+        return pd.DataFrame()
+    return read_hist_csv_to_df(str(raw))
 
-    for sym in symbols:
-        try:
-            token = sym["TOKEN"]
-            raw_csv = client.historical_csv(segment=segment, token=token, timeframe="day", frm=frm, to=to)
-            df = clean_hist_csv(raw_csv)
-            df = reindex_calendar(df)
-            csv_buffer = io.StringIO()
-            df.to_csv(csv_buffer, index=False)
-            csv_buffers[sym["TRADINGSYM"]] = csv_buffer.getvalue()
-        except Exception as e:
-            st.warning(f"{sym['TRADINGSYM']} error: {e}")
-    return csv_buffers
+# ------------------ Master File ------------------
+@st.cache_data
+def load_master(path="data/master/allmaster.csv"):
+    return pd.read_csv(path)
 
-# ------------------------- UI -------------------------
-# Example symbols list (replace with your NSE master subset)
-symbols_list = [
-    {"TRADINGSYM": "ZYDUSWELL", "TOKEN": 17635},
-    {"TRADINGSYM": "ZYDUSLIFE", "TOKEN": 7929},
-    {"TRADINGSYM": "ZUARIIND", "TOKEN": 3827}
-]
+df_master = load_master()
+nse_df = df_master[df_master["SEGMENT"]=="NSE"]
 
-days_back = st.number_input("Number of days to fetch", min_value=30, max_value=2000, value=365, step=1)
+# ------------------ User Inputs ------------------
+days_back = st.number_input("Number of days to fetch", min_value=30, max_value=2000, value=365)
+symbols_list = st.multiselect("Select symbols (or leave empty for all NSE EQ+IDX)", nse_df["TRADINGSYM"].tolist())
 
-if st.button("Fetch Historical Data"):
+if st.button("Fetch & Download Historical CSVs"):
     client = st.session_state.get("client")
     if not client:
-        st.error("⚠️ Not logged in. Please login first.")
+        st.error("Not logged in (client missing).")
         st.stop()
 
-    st.info(f"Fetching daily OHLCV for {len(symbols_list)} symbols...")
-    csv_buffers = fetch_sample_historical(client, symbols_list, days_back=days_back)
-
-    if not csv_buffers:
-        st.warning("No historical data fetched.")
-        st.stop()
-
-    # ZIP download
+    if not symbols_list:
+        symbols_list = nse_df["TRADINGSYM"].tolist()
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w") as zf:
-        for sym, csv_str in csv_buffers.items():
-            zf.writestr(f"{sym}_historical.csv", csv_str)
-    zip_buffer.seek(0)
-    st.download_button(
-        label="📥 Download All Historical CSVs (ZIP)",
-        data=zip_buffer,
-        file_name="nse_historical_ohlcv.zip",
-        mime="application/zip"
-    )
-    st.success("✅ Historical CSVs ready for download!")
+        for sym in symbols_list:
+            try:
+                token = int(nse_df[nse_df["TRADINGSYM"]==sym]["TOKEN"].values[0])
+                df = fetch_historical(client, "NSE", token, days_back)
+                if df.empty:
+                    st.warning(f"No data for {sym}")
+                    continue
+                csv_bytes = df.to_csv(index=False).encode("utf-8")
+                zf.writestr(f"{sym}.csv", csv_bytes)
+                st.success(f"{sym} fetched: {len(df)} rows")
+            except Exception as e:
+                st.warning(f"{sym} error: {e}\n{traceback.format_exc()}")
+    st.download_button("📥 Download ZIP of CSVs", data=zip_buffer.getvalue(), file_name="nse_ohlcv.zip", mime="application/zip")
