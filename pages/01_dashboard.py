@@ -166,36 +166,23 @@ except Exception as e:
 
 try:
     if hist_df.shape[1] >= 6:
-        # Parse DateTime column with multiple formats
-        def try_parse(dt_str):
-            for fmt in ("%d-%m-%Y %H:%M", "%d-%m-%Y", "%Y-%m-%d %H:%M:%S", "%d%m%Y%H%M", "%Y-%m-%d"):
-                try:
-                    return pd.to_datetime(dt_str, format=fmt, dayfirst=True)
-                except:
-                    continue
-            # fallback to default parser
-            return pd.to_datetime(dt_str, dayfirst=True, errors='coerce')
-
-        hist_df["DateTime"] = hist_df["DateTime"].apply(try_parse)
-        # Drop rows where parsing failed
-        hist_df = hist_df.dropna(subset=["DateTime"]).sort_values(by="DateTime").reset_index(drop=True)
-
-        # Get date part
-        hist_df["date_only"] = hist_df["DateTime"].dt.date
-
-        # **Filter for dates strictly less than today**
-        prev_days = hist_df[hist_df["DateTime"] < pd.Timestamp(today_date)]
-
-        if not prev_days.empty:
-            # Get the last row (most recent close before today)
-            prev_close = float(prev_days.iloc[-1]["Close"])
+        # Parse DateTime explicitly
+        hist_df["DateTime"] = pd.to_datetime(hist_df[0])  # first column is date
+        # Ensure DataFrame columns are named meaningfully
+        if hist_df.shape[1] == 8:
+            hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI", "date_str"]
         else:
-            # fallback: use the latest available data
+            hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
+        # Filter for data before today
+        previous_days = hist_df[hist_df["DateTime"] < pd.Timestamp(today_date)]
+        if not previous_days.empty:
+            prev_close = float(previous_days.iloc[-1]["Close"])
+        else:
+            # fallback: most recent available data
             prev_close = float(hist_df.iloc[-1]["Close"])
     else:
         prev_close = ltp
 except Exception:
-    # fallback in case of errors
     prev_close = ltp
 st.write("Historical data sample:", hist_df.head())
 
