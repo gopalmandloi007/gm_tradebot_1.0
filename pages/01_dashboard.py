@@ -146,6 +146,9 @@ try:
         except Exception:
             return 0.0
 
+    st.write("Historical DataFrame:")
+    st.dataframe(hist_df)
+
     # ------------------ Usage Example ------------------
     st.info("Fetching live prices and previous close (robust logic).")
     ltp_list, prev_close_list = [], []
