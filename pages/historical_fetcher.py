@@ -1,88 +1,94 @@
 import streamlit as st
 import pandas as pd
-import io, zipfile
+import io
 from datetime import datetime, timedelta
-import traceback
+import zipfile
 
 st.set_page_config(layout="wide")
 st.title("📥 Historical OHLCV Download — NSE Stocks (Daily)")
 
-# ------------------ Utilities ------------------
-def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
-    if not hist_csv or not hist_csv.strip():
-        return pd.DataFrame()
-    lines = hist_csv.strip().splitlines()
-    if not lines:
+# ------------------------
+# Utilities
+# ------------------------
+def read_hist_csv_to_df(raw_csv: str) -> pd.DataFrame:
+    """Basic robust parser for historical CSV (similar to your chart code)."""
+    if not raw_csv.strip():
         return pd.DataFrame()
     try:
-        df = pd.read_csv(io.StringIO(hist_csv), header=None)
+        df = pd.read_csv(io.StringIO(raw_csv), header=None)
     except Exception:
-        try:
-            df = pd.read_csv(io.StringIO(hist_csv), header=None, delim_whitespace=True)
-        except:
-            return pd.DataFrame()
-    # Assign columns
+        df = pd.read_csv(io.StringIO(raw_csv), header=None, delim_whitespace=True)
     if df.shape[1] >= 6:
-        if df.shape[1] == 7:
-            df.columns = ["DateTime","Open","High","Low","Close","Volume","OI"]
-        else:
-            df.columns = ["DateTime","Open","High","Low","Close","Volume"]
+        df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"] + (["OI"] if df.shape[1]==7 else [])
     else:
         return pd.DataFrame()
-    # Clean DateTime strings
-    df["DateTime"] = pd.to_datetime(df["DateTime"].astype(str).str.strip(), format="%d%m%Y%H%M", errors="coerce")
-    df = df.dropna(subset=["DateTime"])
-    for col in ["Open","High","Low","Close","Volume"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    # Keep last row per day
-    df["Date"] = df["DateTime"].dt.normalize()
-    df = df.sort_values("DateTime").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
-    df["DateStr"] = df["Date"].dt.strftime("%Y-%m-%d")
-    return df[["DateTime","Date","DateStr","Open","High","Low","Close","Volume"]]
+    # Numeric conversion
+    for c in ["Open","High","Low","Close","Volume","OI"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df
 
-def fetch_historical(client, segment, token, days):
-    today = datetime.today()
-    frm = (today - timedelta(days=days+30)).strftime("%d%m%Y%H%M")
-    to = today.strftime("%d%m%Y%H%M")
-    try:
-        raw = client.historical_csv(segment=segment, token=token, timeframe="day", frm=frm, to=to)
-    except Exception as e:
-        st.warning(f"Failed API for token {token}: {e}")
+def clean_hist_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Clean historical OHLCV dataframe: deduplicate, remove future dates, keep only valid rows."""
+    if df.empty:
+        return df
+    # Convert DateTime
+    if "DateTime" in df.columns:
+        df["Date"] = pd.to_datetime(df["DateTime"], errors="coerce").dt.normalize()
+    elif "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
+    else:
         return pd.DataFrame()
-    return read_hist_csv_to_df(str(raw))
+    # Keep only rows with Close > 0
+    df = df.dropna(subset=["Close"])
+    df = df[df["Close"] > 0]
+    # Keep only past dates
+    today = pd.to_datetime(datetime.today().date())
+    df = df[df["Date"] <= today]
+    # Sort and deduplicate
+    df = df.sort_values("Date").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
+    # Optional: keep DateStr for categorical axis
+    df["DateStr"] = df["Date"].dt.strftime("%Y-%m-%d")
+    return df
 
-# ------------------ Master File ------------------
-@st.cache_data
-def load_master(path="data/master/allmaster.csv"):
-    return pd.read_csv(path)
+# ------------------------
+# UI Controls
+# ------------------------
+days_back = st.number_input("Number of days to fetch", min_value=10, max_value=2000, value=365, step=1)
 
-df_master = load_master()
-nse_df = df_master[df_master["SEGMENT"]=="NSE"]
+# Simulated list of NSE symbols for demo (replace with your master.csv & token API)
+symbols = ["ZYDUSWELL", "ZYDUSLIFE", "ZUARIIND"]
+tokens = [17635, 7929, 3827]
 
-# ------------------ User Inputs ------------------
-days_back = st.number_input("Number of days to fetch", min_value=30, max_value=2000, value=365)
-symbols_list = st.multiselect("Select symbols (or leave empty for all NSE EQ+IDX)", nse_df["TRADINGSYM"].tolist())
-
-if st.button("Fetch & Download Historical CSVs"):
-    client = st.session_state.get("client")
-    if not client:
-        st.error("Not logged in (client missing).")
-        st.stop()
-
-    if not symbols_list:
-        symbols_list = nse_df["TRADINGSYM"].tolist()
+if st.button("Fetch Historical OHLCV"):
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w") as zf:
-        for sym in symbols_list:
+        for symbol, token in zip(symbols, tokens):
+            st.info(f"Fetching {symbol}...")
             try:
-                token = int(nse_df[nse_df["TRADINGSYM"]==sym]["TOKEN"].values[0])
-                df = fetch_historical(client, "NSE", token, days_back)
+                # ------------------------
+                # Replace this with actual API call: client.historical_csv(...)
+                # For demo, let's generate fake CSV
+                fake_csv = "\n".join([
+                    "28-08-2025,2026.3,2041.2,1992.9,2031,34530",
+                    "29-08-2025,2040,2045,2005,2018.7,28546",
+                    "10-09-2025,2070,2249.7,2065,2217.8,1267867",
+                    "20-09-2025,2237.6,2286,2221.3,2253.5,215386",
+                ])
+                df = read_hist_csv_to_df(fake_csv)
+                df = clean_hist_df(df)
                 if df.empty:
-                    st.warning(f"No data for {sym}")
+                    st.warning(f"No historical data for {symbol}")
                     continue
                 csv_bytes = df.to_csv(index=False).encode("utf-8")
-                zf.writestr(f"{sym}.csv", csv_bytes)
-                st.success(f"{sym} fetched: {len(df)} rows")
+                zf.writestr(f"{symbol}.csv", csv_bytes)
+                st.success(f"{symbol} processed and added to ZIP")
             except Exception as e:
-                st.warning(f"{sym} error: {e}\n{traceback.format_exc()}")
-    st.download_button("📥 Download ZIP of CSVs", data=zip_buffer.getvalue(), file_name="nse_ohlcv.zip", mime="application/zip")
+                st.error(f"Error for {symbol}: {e}")
+    zip_buffer.seek(0)
+    st.download_button(
+        label="Download All Historical CSVs (ZIP)",
+        data=zip_buffer,
+        file_name=f"nse_ohlcv_{datetime.today().strftime('%Y%m%d')}.zip",
+        mime="application/zip"
+    )
