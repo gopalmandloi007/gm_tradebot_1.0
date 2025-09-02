@@ -14,55 +14,36 @@ DEFAULT_TOTAL_CAPITAL = 1400000
 DEFAULT_INITIAL_SL_PCT = 2.0
 DEFAULT_TARGETS = [10, 20, 30, 40]
 
-def get_robust_prev_close_from_hist(hist_df: pd.DataFrame, today_date: date):
+def get_prev_close(hist_df: pd.DataFrame, today_date: date):
     """
-    Given a parsed historical DataFrame (with DateTime and Close),
-    return (prev_close_value_or_None, reason_string).
-
-    Fixes:
-      - Ignores today's rows (so LTP won't be mistaken as prev close).
-      - Prefers exactly yesterday's close.
-      - Falls back to last trading date before today if yesterday missing.
+    Returns strictly the previous trading day's close.
+    Ignores today's rows (so LTP is never picked).
     """
     try:
-        if "DateTime" not in hist_df.columns:
-            return None, "no DateTime column"
-        if "Close" not in hist_df.columns:
-            for alt in ["close", "C4", "Last", "last"]:
-                if alt in hist_df.columns:
-                    hist_df = hist_df.rename(columns={alt: "Close"})
-                    break
-            if "Close" not in hist_df.columns:
-                return None, "no Close column"
+        if "DateTime" not in hist_df.columns or "Close" not in hist_df.columns:
+            return None, "missing columns"
 
-        df = hist_df.dropna(subset=["DateTime"]).copy()
+        df = hist_df.dropna(subset=["DateTime", "Close"]).copy()
         if df.empty:
-            return None, "no valid DateTime rows"
+            return None, "no data"
 
         df["date_only"] = df["DateTime"].dt.date
         df["Close_numeric"] = pd.to_numeric(df["Close"], errors="coerce")
 
-        # ---- Step 0: Exclude today's rows so LTP not mistaken ----
+        # 🔹 Ignore today's data so we don't pick LTP
         df = df[df["date_only"] < today_date]
         if df.empty:
             return None, "no history before today"
 
-        # ---- Step 1: Prefer yesterday ----
-        yesterday = today_date - timedelta(days=1)
-        if yesterday in df["date_only"].unique():
-            y_rows = df[df["date_only"] == yesterday].sort_values("DateTime")
-            val = y_rows["Close_numeric"].dropna().iloc[-1]
-            return float(val), "yesterday_close"
-
-        # ---- Step 2: If yesterday missing, fallback to latest trading day ----
+        # 🔹 Pick last available trading day before today
         prev_trading_date = df["date_only"].max()
         prev_rows = df[df["date_only"] == prev_trading_date].sort_values("DateTime")
-        val = prev_rows["Close_numeric"].dropna().iloc[-1]
-        return float(val), "prev_trading_date"
+        prev_close = prev_rows["Close_numeric"].dropna().iloc[-1]
+
+        return float(prev_close), f"prev_close_of_{prev_trading_date}"
 
     except Exception as exc:
         return None, f"error:{str(exc)[:120]}"
-
 
 # ------------------ Client check ------------------
 client = st.session_state.get("client")
