@@ -11,15 +11,15 @@ def fetch_holdings(client):
         return pd.DataFrame()
     raw_data = resp.get("data", [])
     records = []
-
     for h in raw_data:
         base = {k: v for k, v in h.items() if k != "tradingsymbol"}
-        tradingsymbols_list = h.get("tradingsymbol", [])
-        for ts in tradingsymbols_list:
-            if ts.get("exchange") == "NSE":
-                record = {**base, **ts}
-                records.append(record)
-
+        # Check if 'tradingsymbol' key exists
+        if "tradingsymbol" in h:
+            for ts in h.get("tradingsymbol", []):
+                if ts.get("exchange") == "NSE":
+                    records.append({**base, **ts})
+        else:
+            st.write("Warning: 'tradingsymbol' missing in data:", h)
     df = pd.DataFrame(records)
     st.write("Holdings DataFrame columns:", df.columns)
     return df
@@ -30,7 +30,7 @@ def fetch_positions(client):
     st.write("Positions raw response:", resp)  # Debug
     if resp.get("status") != "SUCCESS":
         return pd.DataFrame()
-    data = resp.get("positions", [])
+    data = resp.get("data", [])
     records = []
     for pos in data:
         base = {k: v for k, v in pos.items() if k != "tradingsymbol"}
