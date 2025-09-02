@@ -173,7 +173,7 @@ def get_robust_prev_close_from_hist(hist_df: pd.DataFrame, today_date: date):
         # 1) Look for most recent trading date strictly before today
         prev_dates = [d for d in sorted(df["date_only"].unique()) if d < today_date]
         if prev_dates:
-            prev_trading_date = prev_dates[0]
+            prev_trading_date = prev_dates[-1]
             prev_rows = df[df["date_only"] == prev_trading_date].sort_values("DateTime")
             val = prev_rows["Close_numeric"].dropna().iloc[-1]
             return float(val), "prev_trading_date"
@@ -190,7 +190,7 @@ def get_robust_prev_close_from_hist(hist_df: pd.DataFrame, today_date: date):
                 dedup.append(v)
                 seen.add(v)
         if len(dedup) >= 2:
-            return float(dedup[-1]), "dedup_second_last"
+            return float(dedup[-2]), "dedup_second_last"
         else:
             return float(closes_series[-1]), "last_available"
     except Exception as exc:
@@ -300,7 +300,7 @@ try:
     today_date = today_dt.date()
 
     POSSIBLE_PREV_KEYS = [
-        "prev_close", "previous_close", "Close", "previousClosePrice", "prevClose",
+        "prev_close", "previous_close", "previousClose", "previousClosePrice", "prevClose",
         "prevclose", "previousclose", "prev_close_price", "yesterdayClose", "previous_close_price",
         "prev_close_val", "previous_close_val", "yesterday_close"
     ]
