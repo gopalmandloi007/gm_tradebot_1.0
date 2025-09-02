@@ -266,9 +266,15 @@ with st.spinner("Downloading master..."):
         st.error(f"Failed to download/load master: {e}")
         st.stop()
 
-nse_df = master_df[master_df["SEGMENT"] == "NSE"].copy()
+# Normalize segment names
+master_df["SEGMENT"] = master_df["SEGMENT"].astype(str).str.strip().str.upper()
+
+# Allow NSE CASH, NSE-EQ, etc.
+nse_df = master_df[master_df["SEGMENT"].str.contains("NSE")].copy()
+
 if nse_df.empty:
-    st.error("No NSE rows found in master. Choose a different master or upload your own master CSV.")
+    st.error("⚠️ No NSE rows found in master. Please check the master file content.")
+    st.dataframe(master_df.head(20))  # show sample for debug
     st.stop()
 
 st.sidebar.markdown(f"🔹 NSE symbols in master: **{len(nse_df)}**")
