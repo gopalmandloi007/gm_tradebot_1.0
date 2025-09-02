@@ -199,11 +199,27 @@ try:
         st.stop()
 
     rows = []
-    for item in holdings:
-        # tolerate different shapes of the API payload
-        exchange = item.get("exchange") or (item.get("tradingsymbol", {}) or {}).get("exchange")
-        if exchange != "NSE":
-            continue
+    for item in some_list:  # jaha bhi aap loop kar rahe ho
+    if isinstance(item, dict):
+        exchange = item.get("exchange")
+
+        # kabhi kabhi "tradingsymbol" nested dict me ho sakta hai
+        if not exchange:
+            ts = item.get("tradingsymbol")
+            if isinstance(ts, dict):
+                exchange = ts.get("exchange")
+            else:
+                exchange = None
+
+    elif isinstance(item, list) and len(item) > 0 and isinstance(item[0], dict):
+        # agar item ek list hai to uske pehle dict element se exchange nikalo
+        sub_item = item[0]
+        exchange = sub_item.get("exchange") or (
+            sub_item.get("tradingsymbol", {}) if isinstance(sub_item.get("tradingsymbol"), dict) else None
+        )
+
+    else:
+        exchange = None
 
         # core fields
         avg_buy_price = float(item.get("avg_buy_price") or 0)
