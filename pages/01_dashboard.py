@@ -10,6 +10,9 @@ if not client:
     st.error("⚠️ Not logged in. Please login first from the Login page.")
     st.stop()
 
+# ---------------- Debug Option ----------------
+show_debug = st.checkbox("🐞 Show Debug Data")
+
 # ---------------- Helper to fetch LTP + Prev Close ----------------
 def fetch_ltp(client, segment, token):
     try:
@@ -19,7 +22,7 @@ def fetch_ltp(client, segment, token):
         st.warning(f"LTP fetch failed for {token}: {e}")
         return 0.0
 
-def fetch_prev_close(client, segment, token, max_days_lookback=10):
+def fetch_prev_close(client, segment, token, symbol, max_days_lookback=10):
     closes = []
     today = datetime.now()
     try:
@@ -44,6 +47,11 @@ def fetch_prev_close(client, segment, token, max_days_lookback=10):
         st.warning(f"Prev close fetch failed for {token}: {e}")
 
     closes = list(dict.fromkeys(closes))  # unique preserve order
+
+    # Debug raw closes
+    if show_debug:
+        st.write(f"🔎 {symbol} ({token}) closes → {closes}")
+
     return closes[-2] if len(closes) >= 2 else 0.0
 
 # ---------------- Load Holdings ----------------
@@ -67,7 +75,7 @@ try:
 
     # Fetch LTP & Prev Close
     df["ltp"] = df.apply(lambda r: fetch_ltp(client, r["segment"], r["token"]), axis=1)
-    df["prev_close"] = df.apply(lambda r: fetch_prev_close(client, r["segment"], r["token"]), axis=1)
+    df["prev_close"] = df.apply(lambda r: fetch_prev_close(client, r["segment"], r["token"], r["symbol"]), axis=1)
 
     # Calculations
     df["invested"] = df["quantity"] * df["avg_price"]
