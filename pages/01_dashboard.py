@@ -82,86 +82,144 @@ try:
 
     # ------------------ Fetch LTP + robust prev_close per symbol ------------------
     st.info("Fetching live prices and previous close (robust logic).")
-    ltp_list = []
-    prev_close_list = []
+ltp_list = []
+prev_close_list = []
 
-    today_dt = datetime.now()
-    today_date = today_dt.date()
+today_dt = datetime.now()
+today_date = today_dt.date()
 
-    for idx, row in df.iterrows():
-        token = row.get("token")
-        # safe quote fetch
-        try:
-            quote_resp = client.get_quotes(exchange="NSE", token=token)
-            if isinstance(quote_resp, dict):
-                ltp_val = quote_resp.get("ltp") or quote_resp.get("last_price") or quote_resp.get("lastTradedPrice")
-            else:
-                ltp_val = None
-            ltp = float(ltp_val or 0.0)
-        except Exception:
+# helper: try many common keys that APIs might use for prev close
+POSSIBLE_PREV_KEYS = [
+    "prev_close", "previous_close", "previousClose", "previousClosePrice", "prevClose",
+    "prevclose", "previousclose", "prev_close_price", "yesterdayClose", "previous_close_price"
+]
+
+for idx, row in df.iterrows():
+    token = row.get("token")
+    # safe quote fetch (get LTP and maybe prev close if available)
+    prev_close_from_quote = None
+    try:
+        quote_resp = client.get_quotes(exchange="NSE", token=token)
+        if isinstance(quote_resp, dict):
+            ltp_val = quote_resp.get("ltp") or quote_resp.get("last_price") or quote_resp.get("lastTradedPrice") or quote_resp.get("lastPrice")
+            # try to extract prev close from common keys
+            for k in POSSIBLE_PREV_KEYS:
+                if k in quote_resp and quote_resp.get(k) not in (None, "", []):
+                    try:
+                        prev_close_from_quote = float(quote_resp.get(k))
+                        break
+                    except Exception:
+                        # might be string - try numeric cast later
+                        try:
+                            prev_close_from_quote = float(str(quote_resp.get(k)).replace(",", ""))
+                            break
+                        except Exception:
+                            prev_close_from_quote = None
+            # ltp safe-cast
+            try:
+                ltp = float(ltp_val or 0.0)
+            except Exception:
+                ltp = 0.0
+        else:
             ltp = 0.0
-        ltp_list.append(ltp)
+            prev_close_from_quote = None
+    except Exception:
+        ltp = 0.0
+        prev_close_from_quote = None
 
-        # Initialize prev_close with current ltp as fallback
-        prev_close = ltp
+    ltp_list.append(ltp)
 
-        # Fetch historical data CSV
+    # Initialize prev_close (prefer quote value)
+    prev_close = prev_close_from_quote if prev_close_from_quote is not None else ltp
+
+    # If quote didn't provide prev close, fallback to historical CSV robustly
+    if prev_close_from_quote is None:
         try:
+            # prepare from/to for API (your existing format)
             from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
             to_date = today_dt.strftime("%d%m%Y%H%M")
             hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_date, to=to_date)
 
-            # handle bytes or string
-            if not isinstance(hist_csv, str):
-                hist_csv = str(hist_csv)
-
-            hist_df = pd.read_csv(io.StringIO(hist_csv), header=None)
-
-            # Assign columns dynamically
-            if hist_df.shape[1] >= 6:
-                if hist_df.shape[1] == 7:
-                    hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
-                else:
-                    hist_df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
-
-                # Parse DateTime explicitly with multiple formats
-                def try_parse(dt_str):
-                    for fmt in ("%d-%m-%Y %H:%M", "%d-%m-%Y", "%Y-%m-%d %H:%M:%S", "%d%m%Y%H%M", "%Y-%m-%d"): 
-                        try:
-                            return pd.to_datetime(dt_str, format=fmt, dayfirst=True)
-                        except Exception:
-                            continue
-                    # fallback
-                    return pd.to_datetime(dt_str, dayfirst=True, errors='coerce')
-
-                hist_df["DateTime"] = hist_df["DateTime"].apply(try_parse)
-                hist_df = hist_df.dropna(subset=["DateTime"]).sort_values(by="DateTime")
-                hist_df["date_only"] = hist_df["DateTime"].dt.date
-
-                # Define start of today as timestamp
-                start_of_today = pd.Timestamp(datetime.combine(today_date, datetime.min.time()))
-
-                # Filter for data before today
-                previous_data = hist_df[hist_df["DateTime"] < start_of_today]
-
-                if not previous_data.empty:
-                    prev_close = float(previous_data.iloc[-1]["Close"])
-                else:
-                    # fallback: latest available data
-                    prev_close = float(hist_df.iloc[-1]["Close"])
+            # normalize hist_csv to string
+            if isinstance(hist_csv, bytes):
+                s = hist_csv.decode("utf-8", errors="ignore")
             else:
-                prev_close = ltp
-        except Exception:
-            prev_close = ltp
+                s = str(hist_csv)
 
-        prev_close_list.append(prev_close)
+            if not s.strip():
+                raise ValueError("Empty historical CSV")
 
-    df["ltp"] = ltp_list
-    df["prev_close"] = prev_close_list
+            # Detect header line: if first line contains words like Date/Open/Close, read header=0
+            first_line = s.strip().splitlines()[0].lower()
+            header_like = any(x in first_line for x in ["date", "datetime", "time", "open", "close", "volume"])
+            if header_like:
+                hist_df = pd.read_csv(io.StringIO(s), header=0)
+            else:
+                hist_df = pd.read_csv(io.StringIO(s), header=None)
 
-except Exception as e:
-    st.error(f"⚠️ Error fetching data: {e}")
-    st.stop()
+            # If header existed but with different column names, try to standardize
+            # Find the column that looks like the datetime column (try first 3 columns)
+            date_col = None
+            for col in hist_df.columns[:3]:
+                try:
+                    # try parsing the first non-null value
+                    sample_val = hist_df[col].dropna().iloc[0]
+                    _ = pd.to_datetime(sample_val, dayfirst=True, errors="raise")
+                    date_col = col
+                    break
+                except Exception:
+                    continue
+            if date_col is None:
+                # fallback to first column
+                date_col = hist_df.columns[0]
+
+            # rename date column to DateTime for consistency
+            hist_df = hist_df.rename(columns={date_col: "DateTime"})
+
+            # If Close column doesn't exist by name, assign based on shape (common formats)
+            if "Close" not in hist_df.columns and hist_df.shape[1] >= 5:
+                # assume order: DateTime, Open, High, Low, Close, Volume, (OI)
+                expected = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
+                # shrink/expand to match actual columns
+                cols_to_apply = expected[:hist_df.shape[1]]
+                hist_df.columns = cols_to_apply
+
+            # parse DateTime robustly (try several formats, then fallback to pandas parser)
+            def parse_dt_series(srs):
+                # try to parse with pandas, letting it infer formats (dayfirst)
+                return pd.to_datetime(srs, dayfirst=True, errors="coerce")
+
+            hist_df["DateTime"] = parse_dt_series(hist_df["DateTime"])
+            hist_df = hist_df.dropna(subset=["DateTime"])
+            if hist_df.empty:
+                raise ValueError("No valid datetimes in historical CSV")
+
+            # create date_only column (this avoids time-of-day / tz issues)
+            hist_df["date_only"] = hist_df["DateTime"].dt.date
+
+            # get most recent trading date strictly before today (so 'previous trading day')
+            available_dates = sorted(hist_df["date_only"].unique())
+            prev_dates = [d for d in available_dates if d < today_date]
+            if prev_dates:
+                prev_trading_date = prev_dates[-1]  # nearest prior trading day (yesterday usually)
+                prev_rows = hist_df[hist_df["date_only"] == prev_trading_date]
+                # use the last row for that date (in case of intraday multiple rows)
+                prev_close_val = prev_rows.iloc[-1].get("Close")
+                prev_close = float(prev_close_val)
+            else:
+                # no date < today found: use latest available close in file (best-effort)
+                prev_close = float(hist_df.iloc[-1]["Close"])
+        except Exception as exc:
+            # on any parse error, fallback to LTP (already assigned)
+            # optionally log for debugging
+            # st.write(f"Warn: prev_close fetch failed for token {token}: {exc}")
+            prev_close = prev_close if prev_close is not None else ltp
+
+    prev_close_list.append(prev_close)
+
+# attach to df
+df["ltp"] = ltp_list
+df["prev_close"] = prev_close_list
 
 # ------------------ Final historical sample display ------------------
 try:
