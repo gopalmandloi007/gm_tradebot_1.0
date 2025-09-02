@@ -1,75 +1,91 @@
 import streamlit as st
 import pandas as pd
-import numpy as np  # <-- import numpy
 import io
 import zipfile
 from datetime import datetime, timedelta
 
-st.set_page_config(layout="wide")
-st.title("📥 Historical OHLCV Download — NSE Stocks (Daily)")
+# -----------------------
+# Clean and prepare OHLCV for download
+# -----------------------
+def prepare_ohlcv_for_download(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Replace messy DateTime with proper ISO dates, keep only OHLCV columns.
+    """
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"]).dt.strftime("%Y-%m-%d")
+    elif "DateStr" in df.columns:
+        df["Date"] = pd.to_datetime(df["DateStr"]).dt.strftime("%Y-%m-%d")
+    else:
+        df["Date"] = pd.to_datetime(df["DateTime"], errors="coerce").dt.strftime("%Y-%m-%d")
 
-# -------------------------
-# Helper: Clean & normalize OHLCV CSV
-# -------------------------
-def clean_hist_df(df: pd.DataFrame) -> pd.DataFrame:
-    if "DateTime" not in df.columns:
-        return pd.DataFrame()
-    df["DateTime"] = pd.to_datetime(df["DateTime"], errors="coerce")
-    df = df.dropna(subset=["DateTime"])
-    df["Date"] = df["DateTime"].dt.normalize()
-    df["DateStr"] = df["Date"].dt.strftime("%Y-%m-%d")
-    for col in ["Open", "High", "Low", "Close", "Volume"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.sort_values("Date").reset_index(drop=True)
-    return df
+    cols_keep = ["Date", "Open", "High", "Low", "Close", "Volume"]
+    df_clean = df[cols_keep].copy()
+    return df_clean
 
-# -------------------------
-# UI: Number of days & sample symbols
-# -------------------------
-days_back = st.number_input("Number of days to fetch", min_value=30, max_value=2000, value=365, step=1)
+# -----------------------
+# Single-symbol CSV download
+# -----------------------
+def single_csv_download(df: pd.DataFrame, symbol: str):
+    df_clean = prepare_ohlcv_for_download(df)
+    csv_data = df_clean.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label=f"Download {symbol} OHLCV CSV",
+        data=csv_data,
+        file_name=f"{symbol}_OHLCV.csv",
+        mime="text/csv"
+    )
 
-# Sample NSE symbols (replace with actual master list)
-symbols = {
-    "ZYDUSWELL": 17635,
-    "ZYDUSLIFE": 7929,
-    "ZUARIIND": 3827
-}
+# -----------------------
+# Multi-symbol ZIP download
+# -----------------------
+def zip_csv_download(dfs: dict):
+    """
+    dfs: dict of {symbol: DataFrame}
+    """
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for symbol, df in dfs.items():
+            df_clean = prepare_ohlcv_for_download(df)
+            csv_bytes = df_clean.to_csv(index=False).encode("utf-8")
+            zf.writestr(f"{symbol}_OHLCV.csv", csv_bytes)
+    zip_buffer.seek(0)
+    st.download_button(
+        label="Download All OHLCV CSVs (ZIP)",
+        data=zip_buffer,
+        file_name="OHLCV_data.zip",
+        mime="application/zip"
+    )
 
-st.write(f"Fetching daily OHLCV for {len(symbols)} symbols...")
+# -----------------------
+# Example usage
+# -----------------------
+st.title("📥 Clean OHLCV Download Demo")
 
-# -------------------------
-# Fetch & store CSVs in memory
-# -------------------------
-zip_buffer = io.BytesIO()
+# Fake data for demonstration (replace with your fetched OHLCV)
+df1 = pd.DataFrame({
+    "DateTime": ["59:44.5", "59:44.5"],
+    "Open": [109.78, 106.58],
+    "High": [108.9, 114.02],
+    "Low": [98.33, 97.89],
+    "Close": [109.03, 100.55],
+    "Volume": [5901, 8384],
+    "Date": ["2025-09-02", "2025-09-01"]
+})
 
-with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-    for sym, token in symbols.items():
-        try:
-            # --- Replace below with actual client fetch ---
-            today = datetime.today()
-            dates = pd.date_range(end=today, periods=days_back, freq='B')
-            df = pd.DataFrame({
-                "DateTime": dates,
-                "Open": 100 + np.random.rand(len(dates))*10,   # <-- use np.random
-                "High": 105 + np.random.rand(len(dates))*10,
-                "Low": 95 + np.random.rand(len(dates))*10,
-                "Close": 100 + np.random.rand(len(dates))*10,
-                "Volume": np.random.randint(1000,10000, len(dates))
-            })
-            df = clean_hist_df(df)
-            
-            csv_bytes = df.to_csv(index=False).encode("utf-8")
-            zf.writestr(f"{sym}.csv", csv_bytes)
-        except Exception as e:
-            st.warning(f"{sym} error: {e}")
+df2 = pd.DataFrame({
+    "DateTime": ["59:44.5", "59:44.5"],
+    "Open": [103.03, 107.67],
+    "High": [112.63, 114.32],
+    "Low": [95.59, 104.85],
+    "Close": [109.06, 102.66],
+    "Volume": [4610, 1815],
+    "Date": ["2025-08-29", "2025-08-28"]
+})
 
-zip_buffer.seek(0)
-st.download_button(
-    label="Download Historical OHLCV ZIP",
-    data=zip_buffer,
-    file_name="nse_ohlcv_daily.zip",
-    mime="application/zip"
-)
+# Single CSV download buttons
+single_csv_download(df1, "ZYDUSWELL")
+single_csv_download(df2, "ZYARIIND")
 
-st.success("✅ ZIP ready! Each CSV has ISO dates (YYYY-MM-DD).")
+# Multi-symbol ZIP download
+dfs_all = {"ZYDUSWELL": df1, "ZYARIIND": df2}
+zip_csv_download(dfs_all)
