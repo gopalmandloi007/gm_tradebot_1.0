@@ -102,7 +102,7 @@ for idx, row in df.iterrows():
         ltp = 0.0
     ltp_list.append(ltp)
 
-    # robust prev_close: prefer the last FULL trading day close (date < today)
+    # Initialize prev_close with current ltp as fallback
     prev_close = ltp
     try:
         from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
@@ -135,7 +135,7 @@ for idx, row in df.iterrows():
             hist_df = hist_df.dropna(subset=["DateTime"]).sort_values(by="DateTime")
             hist_df["date_only"] = hist_df["DateTime"].dt.date
 
-            # NEW: Get yesterday's date
+            # Determine yesterday's date
             yesterday_date = today_date - timedelta(days=1)
 
             # Try to get data for yesterday
@@ -143,12 +143,12 @@ for idx, row in df.iterrows():
             if not prev_days.empty:
                 prev_close = float(prev_days.iloc[-1]["Close"])
             else:
-                # fallback: get the last date before today
+                # fallback: get last date before today
                 prev_days = hist_df[hist_df["date_only"] < today_date]
                 if not prev_days.empty:
                     prev_close = float(prev_days.iloc[-1]["Close"])
                 else:
-                    # fallback: use the latest available data
+                    # fallback: use latest data available
                     prev_close = float(hist_df.iloc[-1]["Close"])
         else:
             prev_close = ltp
@@ -160,38 +160,38 @@ for idx, row in df.iterrows():
 df["ltp"] = ltp_list
 df["prev_close"] = prev_close_list
 
-    # ------------------ Basic P&L + allocation ------------------
-    df["invested_value"] = df["avg_buy_price"] * df["quantity"]
-    df["current_value"] = df["ltp"] * df["quantity"]
-    df["today_pnl"] = (df["ltp"] - df["prev_close"]) * df["quantity"]
-    df["overall_pnl"] = df["current_value"] - df["invested_value"]
-    df["capital_allocation_%"] = (df["invested_value"] / capital) * 100
+# ------------------ Basic P&L + allocation ------------------
+df["invested_value"] = df["avg_buy_price"] * df["quantity"]
+df["current_value"] = df["ltp"] * df["quantity"]
+df["today_pnl"] = (df["ltp"] - df["prev_close"]) * df["quantity"]
+df["overall_pnl"] = df["current_value"] - df["invested_value"]
+df["capital_allocation_%"] = (df["invested_value"] / capital) * 100
 
-    # ------------------ Risk & TSL / Targets calculations ------------------
-    def calc_stops_targets(row):
-        avg = float(row.get("avg_buy_price") or 0.0)
-        qty = int(row.get("quantity") or 0)
-        ltp = float(row.get("ltp") or 0.0)
+# ------------------ Risk & TSL / Targets calculations ------------------
+def calc_stops_targets(row):
+    avg = float(row.get("avg_buy_price") or 0.0)
+    qty = int(row.get("quantity") or 0)
+    ltp = float(row.get("ltp") or 0.0)
 
-        if qty == 0 or avg == 0:
-            return {
-                "side": "FLAT",
-                "initial_sl_price": 0.0,
-                "tsl_price": 0.0,
-                "targets": [0.0]*len(target_pcts),
-                "initial_risk": 0.0,
-                "open_risk": 0.0,
-                "realized_if_tsl_hit": 0.0
-            }
+    if qty == 0 or avg == 0:
+        return {
+            "side": "FLAT",
+            "initial_sl_price": 0.0,
+            "tsl_price": 0.0,
+            "targets": [0.0]*len(target_pcts),
+            "initial_risk": 0.0,
+            "open_risk": 0.0,
+            "realized_if_tsl_hit": 0.0
+        }
 
-        side = "LONG" if qty > 0 else "SHORT"
+    side = "LONG" if qty > 0 else "SHORT"
 
-        if side == "LONG":
-            initial_sl_price = round(avg * (1 - initial_sl_pct), 4)
-            targets = [round(avg * (1 + t), 4) for t in target_pcts]
+    if side == "LONG":
+        initial_sl_price = round(avg * (1 - initial_sl_pct), 4)
+        targets = [round(avg * (1 + t), 4) for t in target_pcts]
 
-            # percent movement from avg to LTP
-            perc = (ltp / avg - 1) if avg > 0 else 0.0
+        # percent movement from avg to LTP
+        perc = (ltp / avg - 1) if avg > 0 else 0.0
 
             # find highest threshold crossed
             crossed_indices = [i for i, th in enumerate(trailing_thresholds) if perc >= th]
