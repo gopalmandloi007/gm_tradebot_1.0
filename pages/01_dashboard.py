@@ -1,6 +1,6 @@
+# pages/01_dashboard.py
 import streamlit as st
 import pandas as pd
-import numpy as np
 import io
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
@@ -30,7 +30,6 @@ initial_sl_pct = st.sidebar.number_input(
 targets_input = st.sidebar.text_input("Targets % (comma separated)", ",".join(map(str, DEFAULT_TARGETS)))
 
 try:
-    # parse targets and ensure sorted ascending
     target_pcts = sorted([max(0.0, float(t.strip()) / 100.0) for t in targets_input.split(",") if t.strip()])
     if not target_pcts:
         target_pcts = [t / 100.0 for t in DEFAULT_TARGETS]
@@ -38,14 +37,77 @@ except Exception:
     st.sidebar.error("Invalid Targets input — using defaults")
     target_pcts = [t / 100.0 for t in DEFAULT_TARGETS]
 
-# trailing thresholds are the same as target thresholds (user-specified)
 trailing_thresholds = target_pcts
-
 auto_refresh = st.sidebar.checkbox("Auto-refresh LTP on page interaction", value=False)
 show_actions = st.sidebar.checkbox("Show Action Buttons (Square-off / Place SL)", value=False)
 st.sidebar.markdown("---")
 
-# ================== Helper Functions (placed BEFORE main try) ==================
+# ================= Helper functions =================
+
+def pick_nse_entry_from_tradingsymbol(ts):
+    """
+    ts can be:
+      - list of dicts -> prefer dict with exchange == 'NSE'
+      - dict -> return as-is
+      - other -> None
+    """
+    if isinstance(ts, list):
+        for entry in ts:
+            if isinstance(entry, dict) and entry.get("exchange") == "NSE":
+                return entry
+        # fallback to first dict entry
+        for entry in ts:
+            if isinstance(entry, dict):
+                return entry
+        return None
+    if isinstance(ts, dict):
+        return ts
+    return None
+
+
+def parse_holding_item(item):
+    """
+    Given one holding item (dict), return a normalized row dict or None.
+    Handles tradingsymbol being a list (NSE/BSE) as in your sample.
+    """
+    if not isinstance(item, dict):
+        return None
+
+    try:
+        avg_buy_price = float(item.get("avg_buy_price") or 0.0)
+    except Exception:
+        avg_buy_price = 0.0
+
+    try:
+        dp_qty = float(item.get("dp_qty") or 0.0)
+        t1_qty = float(item.get("t1_qty") or 0.0)
+        holding_used = float(item.get("holding_used") or 0.0)
+        total_qty = int(dp_qty + t1_qty + holding_used)
+    except Exception:
+        total_qty = 0
+
+    ts_raw = item.get("tradingsymbol")
+    ts_entry = pick_nse_entry_from_tradingsymbol(ts_raw)
+
+    if not ts_entry:
+        return None
+
+    exchange = ts_entry.get("exchange")
+    symbol = ts_entry.get("tradingsymbol") or ts_entry.get("symbol")
+    token = ts_entry.get("token") or ts_entry.get("instrument_token") or item.get("token")
+
+    if exchange != "NSE" or not symbol or not token or total_qty == 0:
+        # skip non-NSE or missing fields or zero quantity
+        return None
+
+    return {
+        "symbol": symbol,
+        "token": str(token),
+        "avg_buy_price": avg_buy_price,
+        "quantity": total_qty,
+        "product_type": item.get("product_type", ""),
+    }
+
 
 # ------------------ Function 1: Fetch LTP ------------------
 def fetch_ltp(client, token):
@@ -72,14 +134,12 @@ def fetch_prev_close(client, token, today_dt=None):
         today_dt = datetime.now()
 
     try:
-        # Yesterday’s date string
         yesterday = today_dt.date() - timedelta(days=1)
         date_str = yesterday.strftime("%Y%m%d")
 
         from_time = f"{date_str}0000"
         to_time = f"{date_str}1530"
 
-        # Get historical CSV (daily data)
         hist_csv = client.historical_csv(
             segment="NSE",
             token=token,
@@ -96,8 +156,8 @@ def fetch_prev_close(client, token, today_dt=None):
         if hist_df.empty:
             return 0.0
 
-        # Definedge format -> usually [date, open, high, low, close, volume]
-        prev_close_val = hist_df.iloc[-1, 4]  # column index 4 = Close
+        # format: [date, open, high, low, close, volume] assumed
+        prev_close_val = hist_df.iloc[-1, 4]
         return float(prev_close_val)
     except Exception:
         return 0.0
@@ -126,10 +186,7 @@ def calc_stops_targets(row, initial_sl_pct, target_pcts, trailing_thresholds):
         initial_sl_price = round(avg * (1 - initial_sl_pct), 4)
         targets = [round(avg * (1 + t), 4) for t in target_pcts]
 
-        # percent movement from avg to LTP
         perc = (ltp / avg - 1) if avg > 0 else 0.0
-
-        # find highest threshold crossed
         crossed_indices = [i for i, th in enumerate(trailing_thresholds) if perc >= th]
         if crossed_indices:
             idx_max = max(crossed_indices)
@@ -138,7 +195,6 @@ def calc_stops_targets(row, initial_sl_pct, target_pcts, trailing_thresholds):
         else:
             tsl_price = initial_sl_price
 
-        # ensure TSL never below initial SL
         tsl_price = max(tsl_price, initial_sl_price)
 
         open_risk = round(max(0.0, (avg - tsl_price) * qty), 2)
@@ -160,7 +216,6 @@ def calc_stops_targets(row, initial_sl_pct, target_pcts, trailing_thresholds):
         initial_sl_price = round(avg_abs * (1 + initial_sl_pct), 4)
         targets = [round(avg_abs * (1 - t), 4) for t in target_pcts]
 
-        # percent movement in favour of short = (avg - ltp)/avg
         perc = ((avg_abs - ltp) / avg_abs) if avg_abs > 0 else 0.0
         crossed_indices = [i for i, th in enumerate(trailing_thresholds) if perc >= th]
         if crossed_indices:
@@ -187,9 +242,8 @@ def calc_stops_targets(row, initial_sl_pct, target_pcts, trailing_thresholds):
 
 # ================== Main Flow ==================
 try:
-    # ------------------ Fetch holdings ------------------
     holdings_resp = client.get_holdings()
-    if not holdings_resp or holdings_resp.get("status") != "SUCCESS":
+    if not holdings_resp or not isinstance(holdings_resp, dict) or holdings_resp.get("status") != "SUCCESS":
         st.warning("⚠️ No holdings found or API returned error")
         st.stop()
 
@@ -199,66 +253,10 @@ try:
         st.stop()
 
     rows = []
-    for item in response["data"]:
-    exchange = None
-    symbol = None
-
-    ts_list = item.get("tradingsymbol")
-    if isinstance(ts_list, list):  # jab tradingsymbol ek list hai
-        # Prefer NSE otherwise first entry le lo
-        nse_entry = next((ts for ts in ts_list if ts.get("exchange") == "NSE"), None)
-        if nse_entry:
-            exchange = nse_entry.get("exchange")
-            symbol = nse_entry.get("tradingsymbol")
-        else:
-            # fallback: first dict in list
-            exchange = ts_list[0].get("exchange")
-            symbol = ts_list[0].get("tradingsymbol")
-    elif isinstance(ts_list, dict):  # kabhi kabhi dict bhi aa sakta hai
-        exchange = ts_list.get("exchange")
-        symbol = ts_list.get("tradingsymbol")
-
-    st.write("Exchange:", exchange, "Symbol:", symbol)
-
-
-        # core fields
-        avg_buy_price = float(item.get("avg_buy_price") or 0)
-        dp_qty = float(item.get("dp_qty") or 0)
-        t1_qty = float(item.get("t1_qty") or 0)
-        holding_used = float(item.get("holding_used") or 0)
-        total_qty = int(dp_qty + t1_qty + holding_used)
-
-        # symbol/token (string or dict or list)
-        symbol = None
-        token = None
-
-        if isinstance(item.get("tradingsymbol"), str):
-            symbol = item.get("tradingsymbol")
-            token = item.get("token") or item.get("instrument_token") or item.get("id")
-        elif isinstance(item.get("tradingsymbol"), dict):
-            ts = item["tradingsymbol"]
-            symbol = ts.get("tradingsymbol") or ts.get("symbol")
-            token = ts.get("token") or ts.get("instrument_token") or item.get("token")
-        elif isinstance(item.get("tradingsymbol"), list):
-            for ts in item["tradingsymbol"]:
-                if isinstance(ts, dict) and ts.get("exchange") == "NSE":
-                    symbol = ts.get("tradingsymbol") or ts.get("symbol")
-                    token = ts.get("token") or ts.get("instrument_token")
-                    break
-
-        if not symbol or not token:
-            # skip if minimal identifiers missing
-            continue
-
-        rows.append(
-            {
-                "symbol": symbol,
-                "token": token,
-                "avg_buy_price": avg_buy_price,
-                "quantity": total_qty,
-                "product_type": item.get("product_type", ""),
-            }
-        )
+    for item in holdings:
+        parsed = parse_holding_item(item)
+        if parsed:
+            rows.append(parsed)
 
     if not rows:
         st.warning("⚠️ No NSE holdings found.")
@@ -268,11 +266,12 @@ try:
 
     # ------------------ Prices (LTP + Prev Close) ------------------
     st.info("Fetching live prices and previous close (robust logic).")
-    ltp_list, prev_close_list = [], []
+    ltp_list = []
+    prev_close_list = []
     today_dt = datetime.now()
 
-    for _, row in df.iterrows():
-        token = row.get("token")
+    for _, r in df.iterrows():
+        token = str(r.get("token") or "")
         ltp = fetch_ltp(client, token)
         prev_close = fetch_prev_close(client, token, today_dt)
         ltp_list.append(ltp)
@@ -290,7 +289,7 @@ try:
 
     # ------------------ Risk & TSL / Targets calculations ------------------
     results = df.apply(
-        lambda r: calc_stops_targets(r, initial_sl_pct, target_pcts, trailing_thresholds),
+        lambda row: calc_stops_targets(row, initial_sl_pct, target_pcts, trailing_thresholds),
         axis=1,
         result_type="expand",
     )
@@ -308,9 +307,9 @@ try:
     total_current = df["current_value"].sum()
     total_overall_pnl = df["overall_pnl"].sum()
     total_today_pnl = df["today_pnl"].sum()
-    total_initial_risk = df["initial_risk"].sum()
-    total_open_risk = df["open_risk"].sum()
-    total_realized_if_all_tsl = df["realized_if_tsl_hit"].sum()
+    total_initial_risk = df["initial_risk"].sum() if "initial_risk" in df.columns else 0.0
+    total_open_risk = df["open_risk"].sum() if "open_risk" in df.columns else 0.0
+    total_realized_if_all_tsl = df["realized_if_tsl_hit"].sum() if "realized_if_tsl_hit" in df.columns else 0.0
 
     # ------------------ Display KPIs ------------------
     st.subheader("💰 Overall Summary")
@@ -323,20 +322,23 @@ try:
 
     # ------------------ Intelligent Messaging about Open Risk / Breakeven ------------------
     total_positions = len(df)
-    breakeven_count = int((df["open_risk"] == 0).sum())
+    breakeven_count = int((df["open_risk"] == 0).sum()) if "open_risk" in df.columns else 0
     profitable_by_ltp = int((df["ltp"] > df["avg_buy_price"]).sum())
 
-    if breakeven_count == total_positions:
-        st.success(
-            f"✅ All {total_positions} positions have TSL >= AvgBuy (no open risk). {profitable_by_ltp} of them currently show unrealized profit by LTP."
-        )
+    if total_positions == 0:
+        st.info("No positions to show.")
     else:
-        st.info(
-            f"ℹ️ {breakeven_count}/{total_positions} positions have no open risk (TSL >= AvgBuy). {profitable_by_ltp} positions currently showing unrealized profit by LTP."
-        )
-        risky = df[df["open_risk"] > 0].sort_values(by="open_risk", ascending=False).head(10)
-        if not risky.empty:
-            st.table(risky[["symbol", "quantity", "avg_buy_price", "ltp", "tsl_price", "open_risk"]])
+        if breakeven_count == total_positions:
+            st.success(
+                f"✅ All {total_positions} positions have TSL >= AvgBuy (no open risk). {profitable_by_ltp} of them currently show unrealized profit by LTP."
+            )
+        else:
+            st.info(
+                f"ℹ️ {breakeven_count}/{total_positions} positions have no open risk (TSL >= AvgBuy). {profitable_by_ltp} positions currently showing unrealized profit by LTP."
+            )
+            risky = df[df["open_risk"] > 0].sort_values(by="open_risk", ascending=False).head(10) if "open_risk" in df.columns else pd.DataFrame()
+            if not risky.empty:
+                st.table(risky[["symbol", "quantity", "avg_buy_price", "ltp", "tsl_price", "open_risk"]])
 
     # ------------------ If ALL TSL are hit: compute realized PnL scenario ------------------
     st.subheader("🔮 Scenario: If ALL TSL get hit (immediate exit at current TSL)")
@@ -349,27 +351,16 @@ try:
     st.metric("Delta vs Current Unrealized PnL", f"₹{delta_vs_unrealized:,.2f}")
     st.write(f"That is {total_realized_if_all_tsl/capital*100:.2f}% of your total capital.")
 
-    # breakdown of winners/losers under the scenario
-    df["realized_if_tsl_sign"] = df["realized_if_tsl_hit"].apply(
-        lambda x: "profit" if x > 0 else ("loss" if x < 0 else "breakeven")
-    )
-    winners = df[df["realized_if_tsl_hit"] > 0]
-    losers = df[df["realized_if_tsl_hit"] < 0]
-    breakevens = df[df["realized_if_tsl_hit"] == 0]
+    df["realized_if_tsl_sign"] = df["realized_if_tsl_hit"].apply(lambda x: "profit" if x > 0 else ("loss" if x < 0 else "breakeven")) if "realized_if_tsl_hit" in df.columns else ""
+    winners = df[df["realized_if_tsl_hit"] > 0] if "realized_if_tsl_hit" in df.columns else pd.DataFrame()
+    losers = df[df["realized_if_tsl_hit"] < 0] if "realized_if_tsl_hit" in df.columns else pd.DataFrame()
+    breakevens = df[df["realized_if_tsl_hit"] == 0] if "realized_if_tsl_hit" in df.columns else pd.DataFrame()
 
     st.write(f"Winners: {len(winners)}, Losers: {len(losers)}, Breakeven: {len(breakevens)}")
     if not winners.empty:
-        st.table(
-            winners[["symbol", "quantity", "avg_buy_price", "tsl_price", "realized_if_tsl_hit"]]
-            .sort_values(by="realized_if_tsl_hit", ascending=False)
-            .head(10)
-        )
+        st.table(winners[["symbol", "quantity", "avg_buy_price", "tsl_price", "realized_if_tsl_hit"]].sort_values(by="realized_if_tsl_hit", ascending=False).head(10))
     if not losers.empty:
-        st.table(
-            losers[["symbol", "quantity", "avg_buy_price", "tsl_price", "realized_if_tsl_hit"]]
-            .sort_values(by="realized_if_tsl_hit")
-            .head(10)
-        )
+        st.table(losers[["symbol", "quantity", "avg_buy_price", "tsl_price", "realized_if_tsl_hit"]].sort_values(by="realized_if_tsl_hit").head(10))
 
     # ------------------ Positions & Risk Table ------------------
     display_cols = [
@@ -389,40 +380,47 @@ try:
         "open_risk",
         "realized_if_tsl_hit",
     ]
+
+    # ensure the correct name exists: we used "capital_allocation_%" earlier
+    if "capital_allocation_%" not in df.columns and "capital_allocation_%" in df.columns:
+        pass  # just keeping compatibility; main column is capital_allocation_%
+
+    # add target columns to display
     for i in range(1, len(target_pcts) + 1):
         display_cols += [f"target_{i}_pct", f"target_{i}_price"]
 
     st.subheader("📋 Positions & Risk Table")
-    st.dataframe(
-        df[display_cols].sort_values(by="capital_allocation_%", ascending=False).reset_index(drop=True),
-        use_container_width=True,
-    )
+    # ensure only existing columns are selected
+    df_display = df[[c for c in display_cols if c in df.columns]].sort_values(by="capital_allocation_%", ascending=False, na_position="last").reset_index(drop=True)
+    st.dataframe(df_display, use_container_width=True)
 
     # ------------------ Visuals ------------------
     st.subheader("📊 Capital Allocation & Risk Visuals")
-    pie_df = df[["symbol", "capital_allocation_%"]].copy()
-    cash_pct = max(0.0, 100 - pie_df["capital_allocation_%"].sum())
-    pie_df = pd.concat([pie_df, pd.DataFrame([{"symbol": "Cash", "capital_allocation_%": cash_pct}])], ignore_index=True)
-    fig = go.Figure(data=[go.Pie(labels=pie_df["symbol"], values=pie_df["capital_allocation_%"], hole=0.35)])
-    fig.update_traces(textinfo="label+percent")
-    st.plotly_chart(fig, use_container_width=True)
+    pie_df = df[["symbol", "capital_allocation_%"]].copy() if "capital_allocation_%" in df.columns or "capital_allocation_%" in df.columns else pd.DataFrame()
+    if not pie_df.empty:
+        cash_pct = max(0.0, 100 - pie_df["capital_allocation_%"].sum())
+        pie_df = pd.concat([pie_df, pd.DataFrame([{"symbol": "Cash", "capital_allocation_%": cash_pct}])], ignore_index=True)
+        fig = go.Figure(data=[go.Pie(labels=pie_df["symbol"], values=pie_df["capital_allocation_%"], hole=0.35)])
+        fig.update_traces(textinfo="label+percent")
+        st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("⚠️ Risk Exposure by Position (Initial Risk % of Capital)")
-    risk_df = df[["symbol", "initial_risk"]].copy()
-    risk_df["initial_risk_pct_of_capital"] = (risk_df["initial_risk"] / capital) * 100
-    fig2 = go.Figure(data=[go.Bar(x=risk_df["symbol"], y=risk_df["initial_risk_pct_of_capital"])])
-    fig2.update_layout(yaxis_title="% of Capital", xaxis_title="Symbol")
-    st.plotly_chart(fig2, use_container_width=True)
+    if "initial_risk" in df.columns:
+        risk_df = df[["symbol", "initial_risk"]].copy()
+        risk_df["initial_risk_pct_of_capital"] = (risk_df["initial_risk"] / capital) * 100
+        fig2 = go.Figure(data=[go.Bar(x=risk_df["symbol"], y=risk_df["initial_risk_pct_of_capital"])])
+        fig2.update_layout(yaxis_title="% of Capital", xaxis_title="Symbol")
+        st.plotly_chart(fig2, use_container_width=True)
 
     # ------------------ Per-symbol expanders & actions ------------------
     st.subheader("🔍 Per-symbol details & actions")
-    for _, row in df.sort_values(by="capital_allocation_%", ascending=False).iterrows():
+    for _, row in df.sort_values(by="capital_allocation_%", ascending=False, na_position="last").iterrows():
         with st.expander(f"{row['symbol']} — Qty: {row['quantity']} | Invested: ₹{row['invested_value']:.0f}"):
-            st.write(row[[c for c in display_cols if c in row.index]].to_frame().T)
-            st.write("**Targets (price)**:", row["targets"])
-            st.write("**Potential realized if TSL hit (₹)**:", row["realized_if_tsl_hit"])
+            st.write(row[[c for c in df_display.columns if c in row.index]].to_frame().T)
+            st.write("**Targets (price)**:", row.get("targets", []))
+            st.write("**Potential realized if TSL hit (₹)**:", row.get("realized_if_tsl_hit", 0.0))
 
-            if show_actions and row["side"] in ["LONG", "SHORT"]:
+            if show_actions and row.get("side") in ["LONG", "SHORT"]:
                 cols = st.columns(3)
                 if cols[0].button(f"Square-off {row['symbol']}", key=f"sq_{row['symbol']}"):
                     try:
@@ -435,7 +433,7 @@ try:
                         }
                         resp = client.square_off_position(payload)
                         st.write("🔎 Square-off API Response:", resp)
-                        if resp.get("status") == "SUCCESS":
+                        if isinstance(resp, dict) and resp.get("status") == "SUCCESS":
                             st.success("Square-off placed successfully")
                         else:
                             st.error("Square-off failed: " + str(resp))
@@ -443,20 +441,20 @@ try:
                         st.error(f"Square-off failed: {e}")
                         st.text(traceback.format_exc())
 
-                if cols[1].button(f"Place SL Order @ TSL ({row['tsl_price']})", key=f"sl_{row['symbol']}"):
+                if cols[1].button(f"Place SL Order @ TSL ({row.get('tsl_price')})", key=f"sl_{row['symbol']}"):
                     try:
                         payload = {
                             "exchange": "NSE",
                             "tradingsymbol": row["symbol"],
                             "quantity": int(abs(row["quantity"])),
                             "price_type": "SL-LIMIT",
-                            "price": float(row["tsl_price"]),
+                            "price": float(row.get("tsl_price") or 0.0),
                             "product_type": "INTRADAY",
                             "order_type": "SELL" if row["side"] == "LONG" else "BUY",
                         }
                         resp = client.place_order(payload)
                         st.write("🔎 Place SL API Response:", resp)
-                        if resp.get("status") == "SUCCESS":
+                        if isinstance(resp, dict) and resp.get("status") == "SUCCESS":
                             st.success("SL order placed successfully")
                         else:
                             st.error("SL placement failed: " + str(resp))
@@ -464,18 +462,13 @@ try:
                         st.error(f"SL placement failed: {e}")
                         st.text(traceback.format_exc())
 
-                if cols[2].button(f"Modify SL to initial ({row['initial_sl_price']})", key=f"modsl_{row['symbol']}"):
+                if cols[2].button(f"Modify SL to initial ({row.get('initial_sl_price')})", key=f"modsl_{row['symbol']}"):
                     st.info("Modify SL functionality depends on existing order_id. Use Orders page to modify specific orders.")
 
     # ------------------ Export ------------------
     st.subheader("📥 Export")
     csv_bytes = df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "Download positions with risk data (CSV)",
-        csv_bytes,
-        file_name="positions_risk.csv",
-        mime="text/csv",
-    )
+    st.download_button("Download positions with risk data (CSV)", csv_bytes, file_name="positions_risk.csv", mime="text/csv")
 
 except Exception as e:
     st.error(f"⚠️ Dashboard fetch failed: {e}")
