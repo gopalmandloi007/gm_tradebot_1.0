@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import io
 from datetime import datetime, timedelta, date
 import plotly.graph_objects as go
@@ -15,6 +14,189 @@ DEFAULT_TOTAL_CAPITAL = 1400000
 DEFAULT_INITIAL_SL_PCT = 2.0
 DEFAULT_TARGETS = [10, 20, 30, 40]
 
+# ------------------ Helper: parse Definedge CSV (headerless) ------------------
+def parse_definedge_csv(raw_text, timeframe="day"):
+    """
+    Parse raw CSV returned by Definedge (they return CSV without headers).
+    For 'day' or 'minute' timeframe, expected columns:
+      [Dateandtime, Open, High, Low, Close, Volume, (OI optional)]
+    For 'tick' timeframe, expected columns:
+      [UTC(in seconds), LTP, LTQ, OI]
+    Returns (hist_df, error_or_none)
+    """
+    if raw_text is None:
+        return None, "empty response"
+
+    # normalize to string
+    if isinstance(raw_text, bytes):
+        try:
+            s = raw_text.decode("utf-8", "ignore")
+        except Exception:
+            s = str(raw_text)
+    else:
+        s = str(raw_text)
+
+    s = s.strip()
+    if not s:
+        return None, "empty CSV"
+
+    # Read as headerless CSV (commas)
+    try:
+        df = pd.read_csv(io.StringIO(s), header=None)
+    except Exception as exc:
+        return None, f"read_csv error: {exc}"
+
+    if df.shape[0] == 0:
+        return None, "no rows"
+
+    # Assign column names for day/minute
+    if timeframe in ("day", "minute"):
+        if df.shape[1] >= 6:
+            colnames = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
+            if df.shape[1] >= 7:
+                colnames = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
+            extras = []
+            if df.shape[1] > len(colnames):
+                extras = [f"X{i}" for i in range(df.shape[1] - len(colnames))]
+            df.columns = colnames + extras
+        else:
+            # fallback: generic names, keep DateTime as first column
+            df.columns = [f"C{i}" for i in range(df.shape[1])]
+            df = df.rename(columns={df.columns[0]: "DateTime"})
+    elif timeframe == "tick":
+        if df.shape[1] >= 4:
+            df.columns = ["UTC", "LTP", "LTQ", "OI"] + [f"X{i}" for i in range(df.shape[1] - 4)]
+        else:
+            df.columns = [f"C{i}" for i in range(df.shape[1])]
+    else:
+        df.columns = [f"C{i}" for i in range(df.shape[1])]
+
+    # Parse datetime / UTC and coerce numeric columns
+    try:
+        if timeframe in ("day", "minute"):
+            dt_series = None
+            candidates = [
+                "%d-%m-%Y %H:%M:%S",
+                "%d-%m-%Y %H:%M",
+                "%d/%m/%Y %H:%M:%S",
+                "%d/%m/%Y %H:%M",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M"
+            ]
+            for fmt in candidates:
+                try:
+                    dt_series = pd.to_datetime(df["DateTime"], format=fmt, dayfirst=True, errors="coerce")
+                    valid_fraction = dt_series.notna().sum() / max(1, len(dt_series))
+                    yr_max = None
+                    try:
+                        yr_max = dt_series.dt.year.dropna().max()
+                    except Exception:
+                        yr_max = None
+                    if valid_fraction >= 0.6 and (yr_max is None or yr_max >= 1990):
+                        break
+                except Exception:
+                    dt_series = None
+
+            if dt_series is None or dt_series.notna().sum() / max(1, len(df)) < 0.6:
+                dt_series = pd.to_datetime(df["DateTime"], dayfirst=True, errors="coerce")
+
+            if dt_series.isna().sum() / max(1, len(df)) > 0.4:
+                numeric = pd.to_numeric(df["DateTime"], errors="coerce")
+                for unit in ("s", "ms", "us", "ns"):
+                    try:
+                        maybe = pd.to_datetime(numeric, unit=unit, errors="coerce")
+                        valid_fraction = maybe.notna().sum() / max(1, len(maybe))
+                        yr_max = None
+                        try:
+                            yr_max = maybe.dt.year.dropna().max()
+                        except Exception:
+                            yr_max = None
+                        if valid_fraction >= 0.6 and (yr_max is None or yr_max >= 1990):
+                            dt_series = maybe
+                            break
+                    except Exception:
+                        continue
+
+            df["DateTime"] = dt_series
+            for c in ["Open", "High", "Low", "Close", "Volume", "OI"]:
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors="coerce")
+        elif timeframe == "tick":
+            df["UTC"] = pd.to_numeric(df["UTC"], errors="coerce")
+            df["DateTime"] = pd.to_datetime(df["UTC"], unit="s", errors="coerce")
+            if "LTP" in df.columns:
+                df["LTP"] = pd.to_numeric(df["LTP"], errors="coerce")
+            if "LTQ" in df.columns:
+                df["LTQ"] = pd.to_numeric(df["LTQ"], errors="coerce")
+        else:
+            if "DateTime" in df.columns:
+                df["DateTime"] = pd.to_datetime(df["DateTime"], dayfirst=True, errors="coerce")
+    except Exception as exc:
+        return None, f"datetime parse error: {exc}"
+
+    if "DateTime" not in df.columns or df["DateTime"].isna().all():
+        return None, "DateTime parse failed (all NaT)"
+
+    df = df.sort_values("DateTime").reset_index(drop=True)
+    return df, None
+
+
+# ------------------ Robust prev-close helper ------------------
+def get_robust_prev_close_from_hist(hist_df: pd.DataFrame, today_date: date):
+    """
+    Given a parsed historical DataFrame (with DateTime and Close),
+    return (prev_close_value_or_None, reason_string).
+    Logic:
+      1) Prefer most recent trading date strictly before today (last row of that date).
+      2) If no such prior date (e.g. file only contains today's data), dedupe Close values
+         (keeping order) and pick second-last distinct close if available.
+      3) Else fall back to last available close.
+    """
+    try:
+        if "DateTime" not in hist_df.columns:
+            return None, "no DateTime column"
+        if "Close" not in hist_df.columns:
+            for alt in ["close", "C4", "Last", "last"]:
+                if alt in hist_df.columns:
+                    hist_df = hist_df.rename(columns={alt: "Close"})
+                    break
+            if "Close" not in hist_df.columns:
+                return None, "no Close column"
+
+        df = hist_df.dropna(subset=["DateTime"]).copy()
+        if df.empty:
+            return None, "no valid DateTime rows"
+
+        df["date_only"] = df["DateTime"].dt.date
+        df["Close_numeric"] = pd.to_numeric(df["Close"], errors="coerce")
+
+        # 1) Look for most recent trading date strictly before today
+        prev_dates = [d for d in sorted(df["date_only"].unique()) if d < today_date]
+        if prev_dates:
+            prev_trading_date = prev_dates[-1]
+            prev_rows = df[df["date_only"] == prev_trading_date].sort_values("DateTime")
+            val = prev_rows["Close_numeric"].dropna().iloc[-1]
+            return float(val), "prev_trading_date"
+
+        # 2) dedupe sequence approach
+        closes_series = df["Close_numeric"].dropna().tolist()
+        if not closes_series:
+            return None, "no numeric closes"
+
+        seen = set()
+        dedup = []
+        for v in closes_series:
+            if v not in seen:
+                dedup.append(v)
+                seen.add(v)
+        if len(dedup) >= 2:
+            return float(dedup[-2]), "dedup_second_last"
+        else:
+            return float(closes_series[-1]), "last_available"
+    except Exception as exc:
+        return None, f"error:{str(exc)[:120]}"
+
+
 # ------------------ Client check ------------------
 client = st.session_state.get("client")
 if not client:
@@ -23,12 +205,11 @@ if not client:
 
 # ------------------ Sidebar (user controls) ------------------
 st.sidebar.header("⚙️ Dashboard Settings & Risk")
-capital = st.sidebar.number_input("Total Capital (₹)", value=DEFAULT_TOTAL_CAPITAL, step=10000)
-initial_sl_pct = st.sidebar.number_input("Initial Stop Loss (%)", value=DEFAULT_INITIAL_SL_PCT, min_value=0.1, max_value=50.0, step=0.1)/100
-targets_input = st.sidebar.text_input("Targets % (comma separated)", ",".join(map(str, DEFAULT_TARGETS)))
+capital = st.sidebar.number_input("Total Capital (₹)", value=DEFAULT_TOTAL_CAPITAL, step=10000, key="capital_input")
+initial_sl_pct = st.sidebar.number_input("Initial Stop Loss (%)", value=DEFAULT_INITIAL_SL_PCT, min_value=0.1, max_value=50.0, step=0.1, key="initial_sl_input")/100
+targets_input = st.sidebar.text_input("Targets % (comma separated)", ",".join(map(str, DEFAULT_TARGETS)), key="targets_input")
 
 try:
-    # parse targets and ensure sorted ascending
     target_pcts = sorted([max(0.0, float(t.strip())/100.0) for t in targets_input.split(",") if t.strip()])
     if not target_pcts:
         target_pcts = [t/100.0 for t in DEFAULT_TARGETS]
@@ -36,12 +217,11 @@ except Exception:
     st.sidebar.error("Invalid Targets input — using defaults")
     target_pcts = [t/100.0 for t in DEFAULT_TARGETS]
 
-# trailing thresholds are the same as target thresholds (user-specified)
 trailing_thresholds = target_pcts
-
-auto_refresh = st.sidebar.checkbox("Auto-refresh LTP on page interaction", value=False)
-show_actions = st.sidebar.checkbox("Show Action Buttons (Square-off / Place SL)", value=False)
+auto_refresh = st.sidebar.checkbox("Auto-refresh LTP on page interaction", value=False, key="auto_refresh")
+show_actions = st.sidebar.checkbox("Show Action Buttons (Square-off / Place SL)", value=False, key="show_actions")
 st.sidebar.markdown("---")
+
 
 # ------------------ Fetch holdings ------------------
 try:
@@ -92,6 +272,7 @@ try:
             for sym in tradings:
                 sym_obj = sym if isinstance(sym, dict) else {}
                 sym_exchange = sym_obj.get("exchange") if isinstance(sym_obj, dict) else None
+                # keep only NSE entries (your original logic did this)
                 if sym_exchange and sym_exchange != "NSE":
                     continue
                 rows.append({
@@ -125,10 +306,12 @@ try:
     ]
 
     last_hist_df = None
+
     for idx, row in df.iterrows():
         token = row.get("token")
         symbol = row.get("symbol")
         prev_close_from_quote = None
+        ltp = 0.0
 
         # 1) Try to get LTP and prev_close from quote response (fast)
         try:
@@ -136,34 +319,28 @@ try:
             if isinstance(quote_resp, dict):
                 ltp_val = (quote_resp.get("ltp") or quote_resp.get("last_price") or
                            quote_resp.get("lastTradedPrice") or quote_resp.get("lastPrice") or quote_resp.get("ltpPrice"))
-                for k in POSSIBLE_PREV_KEYS:
-                    if k in quote_resp and quote_resp.get(k) not in (None, "", []):
-                        try:
-                            prev_close_from_quote = float(quote_resp.get(k))
-                            break
-                        except Exception:
-                            try:
-                                prev_close_from_quote = float(str(quote_resp.get(k)).replace(",", ""))
-                                break
-                            except Exception:
-                                prev_close_from_quote = None
                 try:
                     ltp = float(ltp_val or 0.0)
                 except Exception:
                     ltp = 0.0
-            else:
-                ltp = 0.0
-                prev_close_from_quote = None
+
+                for k in POSSIBLE_PREV_KEYS:
+                    if k in quote_resp and quote_resp.get(k) not in (None, "", []):
+                        try:
+                            prev_close_from_quote = float(str(quote_resp.get(k)).replace(",", ""))
+                            break
+                        except Exception:
+                            prev_close_from_quote = None
         except Exception:
-            ltp = 0.0
             prev_close_from_quote = None
+            ltp = ltp  # keep 0.0 if failed
 
-        ltp_list.append(ltp)
-        prev_close = prev_close_from_quote if prev_close_from_quote is not None else ltp
-        prev_source = "quote" if prev_close_from_quote is not None else None
-
-        # 2) If quote didn't provide prev_close, fallback to Definedge historical CSV (day timeframe)
-        if prev_close_from_quote is None:
+        # 2) Assign prev_close: prefer quote -> historical -> ltp
+        if prev_close_from_quote is not None:
+            prev_close = prev_close_from_quote
+            prev_source = "quote"
+        else:
+            # fallback to historical CSV
             try:
                 from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
                 to_date = today_dt.strftime("%d%m%Y%H%M")
@@ -176,30 +353,20 @@ try:
                 # store last hist_df for viewing
                 last_hist_df = hist_df.copy()
 
-                # ensure Close exists
-                if "Close" not in hist_df.columns:
-                    raise Exception("No Close column detected in historical data")
-
-                # Ensure DateTime parsed properly and data sorted
-                hist_df = hist_df.dropna(subset=["DateTime"]).sort_values("DateTime").reset_index(drop=True)
-                hist_df["date_only"] = hist_df["DateTime"].dt.date
-
-                # Pick the most recent trading date strictly before today
-                prev_dates = [d for d in sorted(hist_df["date_only"].unique()) if d < today_date]
-                if prev_dates:
-                    prev_trading_date = prev_dates[-1]
-                    prev_rows = hist_df[hist_df["date_only"] == prev_trading_date]
-                    prev_close_val = prev_rows.iloc[-1].get("Close")
+                # use robust helper (implemented above)
+                prev_close_val, reason = get_robust_prev_close_from_hist(hist_df, today_date)
+                if prev_close_val is not None:
                     prev_close = float(prev_close_val)
+                    prev_source = f"historical_csv:{reason}"
                 else:
-                    # fallback: use last available close in file
-                    prev_close = float(hist_df.iloc[-0]["Close"])
-
-                prev_source = "historical_csv"
+                    prev_close = float(ltp or 0.0)
+                    prev_source = f"historical_fallback:{reason}"
             except Exception as exc:
-                prev_close = prev_close if prev_close is not None else ltp
-                prev_source = f"fallback:{str(exc)[:120]}"
+                # both quote and historical failed -> fallback to ltp
+                prev_close = float(ltp or 0.0)
+                prev_source = f"fallback_error:{str(exc)[:120]}"
 
+        ltp_list.append(ltp)
         prev_close_list.append(prev_close)
         prev_source_list.append(prev_source)
 
@@ -221,6 +388,11 @@ except Exception:
     pass
 
 # ------------------ Calculate P&L and other metrics ------------------
+# Ensure numeric coercion
+for col in ["avg_buy_price", "quantity", "ltp", "prev_close"]:
+    if col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
 df["invested_value"] = df["avg_buy_price"] * df["quantity"]
 df["current_value"] = df["ltp"] * df["quantity"]
 df["today_pnl"] = (df["ltp"] - df["prev_close"]) * df["quantity"]
@@ -345,7 +517,6 @@ else:
 # ------------------ Scenario analysis ------------------
 st.subheader("🔮 Scenario: If ALL TSL get hit (immediate exit at current TSL)")
 st.write("This assumes each position is closed at its calculated TSL price. For LONGs, PnL = (TSL - AvgBuy) * Qty. For SHORTs, PnL = (AvgBuy - TSL) * Qty.")
-
 st.metric("Total Realized if all TSL hit", f"₹{total_realized_if_all_tsl:,.2f}")
 delta_vs_unrealized = total_realized_if_all_tsl - total_overall_pnl
 st.metric("Delta vs Current Unrealized PnL", f"₹{delta_vs_unrealized:,.2f}")
@@ -391,6 +562,7 @@ st.plotly_chart(fig2, use_container_width=True)
 # ------------------ Per-symbol expanders & actions ------------------
 st.subheader("🔍 Per-symbol details & actions")
 for idx, row in df.sort_values(by="capital_allocation_%", ascending=False).iterrows():
+    key_base = f"{row['symbol']}_{idx}"
     with st.expander(f"{row['symbol']} — Qty: {row['quantity']} | Invested: ₹{row['invested_value']:.0f}"):
         st.write(row[[c for c in display_cols if c in row.index]].to_frame().T)
         st.write("**Targets (price)**:", row["targets"])
@@ -398,7 +570,7 @@ for idx, row in df.sort_values(by="capital_allocation_%", ascending=False).iterr
 
         if show_actions and row['side'] in ["LONG", "SHORT"]:
             cols = st.columns(3)
-            if cols[0].button(f"Square-off {row['symbol']}", key=f"sq_{row['symbol']}"):
+            if cols[0].button(f"Square-off {row['symbol']}", key=f"sq_{key_base}"):
                 try:
                     payload = {
                         "exchange": "NSE",
@@ -417,7 +589,7 @@ for idx, row in df.sort_values(by="capital_allocation_%", ascending=False).iterr
                     st.error(f"Square-off failed: {e}")
                     st.text(traceback.format_exc())
 
-            if cols[1].button(f"Place SL Order @ TSL ({row['tsl_price']})", key=f"sl_{row['symbol']}"):
+            if cols[1].button(f"Place SL Order @ TSL ({row['tsl_price']})", key=f"sl_{key_base}"):
                 try:
                     payload = {
                         "exchange": "NSE",
@@ -438,7 +610,7 @@ for idx, row in df.sort_values(by="capital_allocation_%", ascending=False).iterr
                     st.error(f"SL placement failed: {e}")
                     st.text(traceback.format_exc())
 
-            if cols[2].button(f"Modify SL to initial ({row['initial_sl_price']})", key=f"modsl_{row['symbol']}"):
+            if cols[2].button(f"Modify SL to initial ({row['initial_sl_price']})", key=f"modsl_{key_base}"):
                 st.info("Modify SL functionality depends on existing order_id. Use Orders page to modify specific orders.")
 
 # ------------------ Export ------------------
