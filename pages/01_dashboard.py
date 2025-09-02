@@ -139,17 +139,16 @@ try:
                 yesterday_date = today_date - timedelta(days=1)
 
                 # Try to get data for yesterday
-                prev_days = hist_df[hist_df["date_only"] == yesterday_date]
-                if not prev_days.empty:
-                    prev_close = float(prev_days.iloc[-1]["Close"])
-                else:
-                    # fallback: get last date before today
-                    prev_days = hist_df[hist_df["date_only"] < today_date]
-                    if not prev_days.empty:
-                        prev_close = float(prev_days.iloc[-1]["Close"])
-                    else:
-                        # fallback: use latest data available
-                        prev_close = float(hist_df.iloc[-1]["Close"])
+                hist_df["DateTime"] = pd.to_datetime(hist_df.iloc[:, 0])
+
+start_of_today = pd.Timestamp(datetime.combine(today_date, datetime.min.time()))
+
+previous_data = hist_df[hist_df["DateTime"] < start_of_today]
+
+if not previous_data.empty:
+    prev_close = float(previous_data.iloc[-1]["Close"])
+else:
+    prev_close = float(hist_df.iloc[-1]["Close"])
             else:
                 prev_close = ltp
         except Exception:
