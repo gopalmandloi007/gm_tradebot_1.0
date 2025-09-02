@@ -150,21 +150,21 @@ def fetch_prev_close(client, token, today_dt=None):
         return 0.0
 
 
-# ------------------ Usage Example ------------------
-st.info("Fetching live prices and previous close (robust logic).")
-ltp_list, prev_close_list = [], []
-today_dt = datetime.now()
+    # ------------------ Usage Example ------------------
+    st.info("Fetching live prices and previous close (robust logic).")
+    ltp_list, prev_close_list = [], []
+    today_dt = datetime.now()
 
-for idx, row in df.iterrows():
-    token = row.get("token")
-    ltp = fetch_ltp(client, token)
-    prev_close = fetch_prev_close(client, token, today_dt)
+    for idx, row in df.iterrows():
+        token = row.get("token")
+        ltp = fetch_ltp(client, token)
+        prev_close = fetch_prev_close(client, token, today_dt)
 
-    ltp_list.append(ltp)
-    prev_close_list.append(prev_close)
+        ltp_list.append(ltp)
+        prev_close_list.append(prev_close)
 
-df["ltp"] = ltp_list
-df["prev_close"] = prev_close_list
+    df["ltp"] = ltp_list
+    df["prev_close"] = prev_close_list
 
     # ------------------ Basic P&L + allocation ------------------
     df["invested_value"] = df["avg_buy_price"] * df["quantity"]
