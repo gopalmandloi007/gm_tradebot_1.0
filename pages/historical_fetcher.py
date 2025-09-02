@@ -142,7 +142,7 @@ def fetch_historical_5yr(client, segment, token):
 # -----------------------
 # Fetch all on button click
 # -----------------------
-if st.button("Fetch 5-Year OHLCV for All NSE Symbols"):
+if st.button("Fetch 5-Year OHLCV for All NSE Stocks & Indices"):
     client = st.session_state.get("client")
     if not client:
         st.error("Please login first.")
@@ -150,16 +150,21 @@ if st.button("Fetch 5-Year OHLCV for All NSE Symbols"):
 
     dfs_all = {}
     progress_text = st.empty()
-    total = len(symbols)
-    for i, sym in enumerate(symbols, 1):
+    
+    # Combine stocks + indices
+    all_symbols = symbols_stocks + symbols_indices
+    total = len(all_symbols)
+
+    for i, sym in enumerate(all_symbols, 1):
         try:
-            token_row = nse_df[nse_df["TRADINGSYM"] == sym].iloc[0]
+            token_row = df_master[df_master["TRADINGSYM"] == sym].iloc[0]
             df_sym = fetch_historical_5yr(client, token_row["SEGMENT"], token_row["TOKEN"])
             if not df_sym.empty:
                 dfs_all[sym] = df_sym
             progress_text.text(f"Fetched {i}/{total}: {sym} | collected: {len(dfs_all)}")
         except Exception as e:
             st.warning(f"{sym} fetch failed: {e}")
+
     progress_text.text(f"Completed fetching {len(dfs_all)}/{total} symbols.")
     
     if dfs_all:
