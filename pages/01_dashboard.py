@@ -15,185 +15,148 @@ DEFAULT_TOTAL_CAPITAL = 1400000
 DEFAULT_INITIAL_SL_PCT = 2.0
 DEFAULT_TARGETS = [10, 20, 30, 40]
 
-# ------------------ Helper: robust historical CSV parser ------------------
-def parse_historical_csv(raw_csv_text):
+# ------------------ Helper: parse Definedge CSV (headerless) ------------------
+def parse_definedge_csv(raw_text, timeframe="day"):
     """
-    Robustly parse historical CSV text to a dataframe with a reliable DateTime column and Close column.
-    Returns (hist_df, error_message_or_None).
+    Parse raw CSV returned by Definedge (they return CSV without headers).
+    For 'day' or 'minute' timeframe, expected columns:
+      [Dateandtime, Open, High, Low, Close, Volume, (OI optional)]
+    For 'tick' timeframe, expected columns:
+      [UTC(in seconds), LTP, LTQ, OI]
+    Returns (hist_df, error_or_none)
     """
-    s = raw_csv_text
-    if isinstance(s, bytes):
+    if raw_text is None:
+        return None, "empty response"
+
+    # normalize to string
+    if isinstance(raw_text, bytes):
         try:
-            s = s.decode("utf-8", "ignore")
+            s = raw_text.decode("utf-8", "ignore")
         except Exception:
-            s = str(s)
-    s = str(s)
-    if not s.strip():
+            s = str(raw_text)
+    else:
+        s = str(raw_text)
+
+    s = s.strip()
+    if not s:
         return None, "empty CSV"
 
-    separators = [",", ";", "\t", "|"]
-    best_candidate = None
-    best_score = -1
-    best_reason = None
-
-    def try_parse_series_to_datetime(srs):
-        """Try multiple strategies to parse a series to datetimes; return parsed Series and valid_count."""
-        n = len(srs)
-        if n == 0:
-            return pd.Series([pd.NaT]*0), 0
-
-        # first try direct pandas inference (strings)
-        parsed = pd.to_datetime(srs, dayfirst=True, errors="coerce")
-        valid = parsed.notna().sum()
-        # if parsed yields years that look sane, prefer it
-        try:
-            max_year = parsed.dt.year.dropna().max() if valid > 0 else None
-        except Exception:
-            max_year = None
-
-        if valid / max(1, n) >= 0.6 and (max_year is None or (max_year and max_year >= 1990)):
-            return parsed, valid
-
-        # if not good enough, try numeric epoch conversions if series can be numeric
-        numeric = pd.to_numeric(srs, errors="coerce")
-        if numeric.notna().sum() == 0:
-            # no numeric values, return what we have
-            return parsed, valid
-
-        for unit in ["ns", "us", "ms", "s"]:
-            try:
-                parsed2 = pd.to_datetime(numeric, unit=unit, errors="coerce")
-                valid2 = parsed2.notna().sum()
-                try:
-                    max_year2 = parsed2.dt.year.dropna().max() if valid2 > 0 else None
-                except Exception:
-                    max_year2 = None
-                if valid2 / max(1, n) >= 0.6 and (max_year2 is None or (max_year2 and max_year2 >= 1990)):
-                    return parsed2, valid2
-            except Exception:
-                continue
-
-        # if none hit threshold, return the best we have (direct parse)
-        return parsed, valid
-
-    # Try different separators and header options; pick the best candidate datetime column
-    for sep in separators:
-        for header_option in [0, None]:
-            try:
-                df_try = pd.read_csv(io.StringIO(s), sep=sep, header=header_option)
-            except Exception:
-                continue
-
-            # If file is empty after read, skip
-            if df_try.shape[0] == 0:
-                continue
-
-            # For each column, try parsing as datetime
-            for col in df_try.columns:
-                try:
-                    parsed_series, valid_count = try_parse_series_to_datetime(df_try[col])
-                except Exception:
-                    parsed_series, valid_count = pd.Series([pd.NaT]*len(df_try)), 0
-
-                # Score candidate: prefer more valid parsed datetimes and recent years
-                score = valid_count
-
-                # boost score if parsed years look recent
-                try:
-                    year_max = parsed_series.dt.year.dropna().max() if valid_count > 0 else None
-                    if year_max and year_max >= 2000:
-                        score += 1000
-                    elif year_max and (1975 <= year_max < 2000):
-                        score += 200
-                except Exception:
-                    pass
-
-                if score > best_score:
-                    best_score = score
-                    best_candidate = {
-                        "df": df_try.copy(),
-                        "sep": sep,
-                        "header": header_option,
-                        "date_col": col,
-                        "parsed_dt": parsed_series,
-                        "valid_count": valid_count
-                    }
-                    best_reason = f"sep={sep} header={header_option} col={col} valid={valid_count}"
-
-    # if no candidate found, fallback: try default read with comma and header=0
-    if best_candidate is None:
-        try:
-            df_fallback = pd.read_csv(io.StringIO(s), header=0)
-            # try to parse first column
-            first_col = df_fallback.columns[0] if len(df_fallback.columns) > 0 else None
-            if first_col is not None:
-                parsed_dt = pd.to_datetime(df_fallback[first_col], dayfirst=True, errors="coerce")
-                df_fallback["DateTime"] = parsed_dt
-                return df_fallback, None
-            else:
-                return None, "could not parse CSV"
-        except Exception as exc:
-            return None, f"fallback read failed: {exc}"
-
-    # Build hist_df from best candidate
-    hist_df = best_candidate["df"]
-    parsed_dt = best_candidate["parsed_dt"]
-
-    # If parsed_dt has too many NaT or looks like 1970 (bad parse), try numeric-unit-only approach on the chosen column
-    if parsed_dt.notna().sum() / max(1, len(parsed_dt)) < 0.3:
-        # attempt numeric conversions explicitly
-        numeric = pd.to_numeric(hist_df[best_candidate["date_col"]], errors="coerce")
-        for unit in ["ns", "us", "ms", "s"]:
-            try:
-                maybe = pd.to_datetime(numeric, unit=unit, errors="coerce")
-                if maybe.notna().sum() / max(1, len(maybe)) >= 0.6 and (maybe.dt.year.dropna().max() or 0) >= 1990:
-                    parsed_dt = maybe
-                    break
-            except Exception:
-                continue
-
-    # If parsed_dt still bad but parsed years are 1970 etc, we still accept it but mark a warning (we'll try to avoid 1970 later)
-    hist_df["DateTime"] = parsed_dt
-
-    # Now try to ensure Close column exists. Common cases:
-    cols_lower = [c.lower() for c in hist_df.columns]
-    if "close" not in cols_lower:
-        # if header missing or unnamed, try mapping by position
-        if hist_df.shape[1] >= 5:
-            # assume order DateTime, Open, High, Low, Close, Volume, OI (common)
-            expected = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
-            # create copy of values and assign expected names for the first n columns
-            hist_df = hist_df.copy()
-            hist_df.columns = expected[:hist_df.shape[1]]
-        else:
-            # try to find column whose values look like prices (numeric, not huge)
-            numeric_counts = {}
-            for c in hist_df.columns:
-                num = pd.to_numeric(hist_df[c], errors="coerce")
-                numeric_counts[c] = num.notna().sum()
-            # choose column (other than DateTime) with highest numeric counts
-            cand = max((c for c in hist_df.columns if c != "DateTime"), key=lambda x: numeric_counts.get(x, 0), default=None)
-            if cand:
-                hist_df = hist_df.rename(columns={cand: "Close"})
-
-    # Final cleanup: coerce Close to numeric if present
-    if "Close" in hist_df.columns:
-        hist_df["Close"] = pd.to_numeric(hist_df["Close"], errors="coerce")
-
-    # Drop rows without DateTime if too many
-    if hist_df["DateTime"].isna().all():
-        return None, f"parsed DateTime seems invalid ({best_reason})"
-
-    # If parsed DateTime rows have year < 1990 for majority, warn but continue
+    # Read as headerless CSV (commas). Definedge docs say CSV without headers.
     try:
-        yr_min = hist_df["DateTime"].dt.year.dropna().min()
-        if yr_min is not None and yr_min < 1990:
-            # still accept but return a warning
-            return hist_df, f"warning: parsed DateTime contains early years (min_year={yr_min}) - check CSV format"
-    except Exception:
-        pass
+        df = pd.read_csv(io.StringIO(s), header=None)
+    except Exception as exc:
+        return None, f"read_csv error: {exc}"
 
-    return hist_df, None
+    if df.shape[0] == 0:
+        return None, "no rows"
+
+    # Assign column names for day/minute
+    if timeframe in ("day", "minute"):
+        # expected at least 6 columns: Dateandtime, Open, High, Low, Close, Volume, (OI optional)
+        if df.shape[1] >= 6:
+            colnames = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
+            if df.shape[1] >= 7:
+                colnames = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
+            # if there are more columns, keep them as extras
+            extras = []
+            if df.shape[1] > len(colnames):
+                extras = [f"X{i}" for i in range(df.shape[1] - len(colnames))]
+            df.columns = colnames + extras
+        else:
+            # fallback: name generically
+            df.columns = [f"C{i}" for i in range(df.shape[1])]
+            df = df.rename(columns={df.columns[0]: "DateTime"})
+    elif timeframe == "tick":
+        # tick: UTC (seconds), LTP, LTQ, OI
+        # ensure at least 4 cols
+        if df.shape[1] >= 4:
+            df.columns = ["UTC", "LTP", "LTQ", "OI"] + [f"X{i}" for i in range(df.shape[1] - 4)]
+        else:
+            df.columns = [f"C{i}" for i in range(df.shape[1])]
+    else:
+        df.columns = [f"C{i}" for i in range(df.shape[1])]
+
+    # Parse datetime / UTC
+    try:
+        if timeframe in ("day", "minute"):
+            # Try several datetime formats commonly used by Definedge:
+            # Examples tried: "01-06-2023 09:15", "01-06-2023 09:15:00", "01/06/2023 09:15:00"
+            dt_series = None
+            candidates = [
+                "%d-%m-%Y %H:%M:%S",
+                "%d-%m-%Y %H:%M",
+                "%d/%m/%Y %H:%M:%S",
+                "%d/%m/%Y %H:%M",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M"
+            ]
+            for fmt in candidates:
+                try:
+                    dt_series = pd.to_datetime(df["DateTime"], format=fmt, dayfirst=True, errors="coerce")
+                    # accept this parse if at least 60% parsed and year reasonable
+                    valid_fraction = dt_series.notna().sum() / max(1, len(dt_series))
+                    yr_max = None
+                    try:
+                        yr_max = dt_series.dt.year.dropna().max()
+                    except Exception:
+                        yr_max = None
+                    if valid_fraction >= 0.6 and (yr_max is None or yr_max >= 1990):
+                        break
+                except Exception:
+                    dt_series = None
+
+            # If not parsed well, try pandas inference (dayfirst)
+            if dt_series is None or dt_series.notna().sum() / max(1, len(df)) < 0.6:
+                dt_series = pd.to_datetime(df["DateTime"], dayfirst=True, errors="coerce")
+
+            # If still bad and many values are numeric (epoch), try converting numeric to datetime assuming seconds/ms/us
+            if dt_series.isna().sum() / max(1, len(df)) > 0.4:
+                numeric = pd.to_numeric(df["DateTime"], errors="coerce")
+                # try units in order
+                for unit in ("s", "ms", "us", "ns"):
+                    try:
+                        maybe = pd.to_datetime(numeric, unit=unit, errors="coerce")
+                        valid_fraction = maybe.notna().sum() / max(1, len(maybe))
+                        yr_max = None
+                        try:
+                            yr_max = maybe.dt.year.dropna().max()
+                        except Exception:
+                            yr_max = None
+                        if valid_fraction >= 0.6 and (yr_max is None or yr_max >= 1990):
+                            dt_series = maybe
+                            break
+                    except Exception:
+                        continue
+
+            df["DateTime"] = dt_series
+            # coerce numeric columns
+            for c in ["Open", "High", "Low", "Close", "Volume", "OI"] :
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors="coerce")
+        elif timeframe == "tick":
+            # UTC is seconds since epoch (per docs)
+            # convert to numeric then to datetime
+            df["UTC"] = pd.to_numeric(df["UTC"], errors="coerce")
+            df["DateTime"] = pd.to_datetime(df["UTC"], unit="s", errors="coerce")
+            if "LTP" in df.columns:
+                df["LTP"] = pd.to_numeric(df["LTP"], errors="coerce")
+            if "LTQ" in df.columns:
+                df["LTQ"] = pd.to_numeric(df["LTQ"], errors="coerce")
+        else:
+            # generic attempt
+            if "DateTime" in df.columns:
+                df["DateTime"] = pd.to_datetime(df["DateTime"], dayfirst=True, errors="coerce")
+    except Exception as exc:
+        return None, f"datetime parse error: {exc}"
+
+    # final check
+    if "DateTime" not in df.columns or df["DateTime"].isna().all():
+        return None, "DateTime parse failed (all NaT)"
+
+    # sort by DateTime ascending
+    df = df.sort_values("DateTime").reset_index(drop=True)
+
+    return df, None
 
 
 # ------------------ Client check ------------------
@@ -310,6 +273,8 @@ try:
         token = row.get("token")
         symbol = row.get("symbol")
         prev_close_from_quote = None
+
+        # 1) Try to get LTP and prev_close from quote response (fast)
         try:
             quote_resp = client.get_quotes(exchange="NSE", token=token)
             if isinstance(quote_resp, dict):
@@ -341,27 +306,29 @@ try:
         prev_close = prev_close_from_quote if prev_close_from_quote is not None else ltp
         prev_source = "quote" if prev_close_from_quote is not None else None
 
+        # 2) If quote didn't provide prev_close, fallback to Definedge historical CSV (day timeframe)
         if prev_close_from_quote is None:
             try:
                 from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
                 to_date = today_dt.strftime("%d%m%Y%H%M")
                 hist_csv = client.historical_csv(segment="NSE", token=token, timeframe="day", frm=from_date, to=to_date)
 
-                hist_df, err = parse_historical_csv(hist_csv)
+                hist_df, err = parse_definedge_csv(hist_csv, timeframe="day")
                 if hist_df is None:
-                    raise Exception(f"parse_historical_csv failed: {err}")
+                    raise Exception(f"parse_definedge_csv failed: {err}")
 
-                # store for sample view
+                # store last hist_df for viewing
                 last_hist_df = hist_df.copy()
 
                 # ensure Close exists
                 if "Close" not in hist_df.columns:
                     raise Exception("No Close column detected in historical data")
 
-                # make sure DateTime is timezone-naive python datetime
-                hist_df = hist_df.sort_values(by="DateTime").reset_index(drop=True)
-                # find most recent trading date strictly before today
+                # Ensure DateTime parsed properly and data sorted
+                hist_df = hist_df.dropna(subset=["DateTime"]).sort_values("DateTime").reset_index(drop=True)
                 hist_df["date_only"] = hist_df["DateTime"].dt.date
+
+                # Pick the most recent trading date strictly before today
                 prev_dates = [d for d in sorted(hist_df["date_only"].unique()) if d < today_date]
                 if prev_dates:
                     prev_trading_date = prev_dates[-1]
@@ -369,11 +336,11 @@ try:
                     prev_close_val = prev_rows.iloc[-1].get("Close")
                     prev_close = float(prev_close_val)
                 else:
-                    # fallback to last available close in file
+                    # fallback: use last available close in file
                     prev_close = float(hist_df.iloc[-1]["Close"])
+
                 prev_source = "historical_csv"
             except Exception as exc:
-                # fallback: keep prev_close as ltp (already set), mark source
                 prev_close = prev_close if prev_close is not None else ltp
                 prev_source = f"fallback:{str(exc)[:120]}"
 
