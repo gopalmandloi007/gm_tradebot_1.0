@@ -14,143 +14,14 @@ DEFAULT_TOTAL_CAPITAL = 1400000
 DEFAULT_INITIAL_SL_PCT = 2.0
 DEFAULT_TARGETS = [10, 20, 30, 40]
 
-# ------------------ Helper: parse Definedge CSV (headerless) ------------------
-def parse_definedge_csv(raw_text, timeframe="day"):
-    """
-    Parse raw CSV returned by Definedge (they return CSV without headers).
-    For 'day' or 'minute' timeframe, expected columns:
-      [Dateandtime, Open, High, Low, Close, Volume, (OI optional)]
-    For 'tick' timeframe, expected columns:
-      [UTC(in seconds), LTP, LTQ, OI]
-    Returns (hist_df, error_or_none)
-    """
-    if raw_text is None:
-        return None, "empty response"
-
-    # normalize to string
-    if isinstance(raw_text, bytes):
-        try:
-            s = raw_text.decode("utf-8", "ignore")
-        except Exception:
-            s = str(raw_text)
-    else:
-        s = str(raw_text)
-
-    s = s.strip()
-    if not s:
-        return None, "empty CSV"
-
-    # Read as headerless CSV (commas)
-    try:
-        df = pd.read_csv(io.StringIO(s), header=None)
-    except Exception as exc:
-        return None, f"read_csv error: {exc}"
-
-    if df.shape[0] == 0:
-        return None, "no rows"
-
-    # Assign column names for day/minute
-    if timeframe in ("day", "minute"):
-        if df.shape[1] >= 6:
-            colnames = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
-            if df.shape[1] >= 7:
-                colnames = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
-            extras = []
-            if df.shape[1] > len(colnames):
-                extras = [f"X{i}" for i in range(df.shape[1] - len(colnames))]
-            df.columns = colnames + extras
-        else:
-            # fallback: generic names, keep DateTime as first column
-            df.columns = [f"C{i}" for i in range(df.shape[1])]
-            df = df.rename(columns={df.columns[0]: "DateTime"})
-    elif timeframe == "tick":
-        if df.shape[1] >= 4:
-            df.columns = ["UTC", "LTP", "LTQ", "OI"] + [f"X{i}" for i in range(df.shape[1] - 4)]
-        else:
-            df.columns = [f"C{i}" for i in range(df.shape[1])]
-    else:
-        df.columns = [f"C{i}" for i in range(df.shape[1])]
-
-    # Parse datetime / UTC and coerce numeric columns
-    try:
-        if timeframe in ("day", "minute"):
-            dt_series = None
-            candidates = [
-                "%d-%m-%Y %H:%M:%S",
-                "%d-%m-%Y %H:%M",
-                "%d/%m/%Y %H:%M:%S",
-                "%d/%m/%Y %H:%M",
-                "%Y-%m-%d %H:%M:%S",
-                "%Y-%m-%d %H:%M"
-            ]
-            for fmt in candidates:
-                try:
-                    dt_series = pd.to_datetime(df["DateTime"], format=fmt, dayfirst=True, errors="coerce")
-                    valid_fraction = dt_series.notna().sum() / max(1, len(dt_series))
-                    yr_max = None
-                    try:
-                        yr_max = dt_series.dt.year.dropna().max()
-                    except Exception:
-                        yr_max = None
-                    if valid_fraction >= 0.6 and (yr_max is None or yr_max >= 1990):
-                        break
-                except Exception:
-                    dt_series = None
-
-            if dt_series is None or dt_series.notna().sum() / max(1, len(df)) < 0.6:
-                dt_series = pd.to_datetime(df["DateTime"], dayfirst=True, errors="coerce")
-
-            if dt_series.isna().sum() / max(1, len(df)) > 0.4:
-                numeric = pd.to_numeric(df["DateTime"], errors="coerce")
-                for unit in ("s", "ms", "us", "ns"):
-                    try:
-                        maybe = pd.to_datetime(numeric, unit=unit, errors="coerce")
-                        valid_fraction = maybe.notna().sum() / max(1, len(maybe))
-                        yr_max = None
-                        try:
-                            yr_max = maybe.dt.year.dropna().max()
-                        except Exception:
-                            yr_max = None
-                        if valid_fraction >= 0.6 and (yr_max is None or yr_max >= 1990):
-                            dt_series = maybe
-                            break
-                    except Exception:
-                        continue
-
-            df["DateTime"] = dt_series
-            for c in ["Open", "High", "Low", "Close", "Volume", "OI"]:
-                if c in df.columns:
-                    df[c] = pd.to_numeric(df[c], errors="coerce")
-        elif timeframe == "tick":
-            df["UTC"] = pd.to_numeric(df["UTC"], errors="coerce")
-            df["DateTime"] = pd.to_datetime(df["UTC"], unit="s", errors="coerce")
-            if "LTP" in df.columns:
-                df["LTP"] = pd.to_numeric(df["LTP"], errors="coerce")
-            if "LTQ" in df.columns:
-                df["LTQ"] = pd.to_numeric(df["LTQ"], errors="coerce")
-        else:
-            if "DateTime" in df.columns:
-                df["DateTime"] = pd.to_datetime(df["DateTime"], dayfirst=True, errors="coerce")
-    except Exception as exc:
-        return None, f"datetime parse error: {exc}"
-
-    if "DateTime" not in df.columns or df["DateTime"].isna().all():
-        return None, "DateTime parse failed (all NaT)"
-
-    df = df.sort_values("DateTime").reset_index(drop=True)
-    return df, None
-
-
-# ------------------ Robust prev-close helper ------------------
 def get_robust_prev_close_from_hist(hist_df: pd.DataFrame, today_date: date):
     """
     Given a parsed historical DataFrame (with DateTime and Close),
     return (prev_close_value_or_None, reason_string).
-    Logic:
-      1) Prefer most recent trading date strictly before today (last row of that date).
-      2) If no such prior date (e.g. file only contains today's data), dedupe Close values
-         (keeping order) and pick second-last distinct close if available.
-      3) Else fall back to last available close.
+
+    Fixed:
+      - Now prefers exactly yesterday's trading close if available.
+      - Falls back only if yesterday data missing.
     """
     try:
         if "DateTime" not in hist_df.columns:
@@ -170,7 +41,14 @@ def get_robust_prev_close_from_hist(hist_df: pd.DataFrame, today_date: date):
         df["date_only"] = df["DateTime"].dt.date
         df["Close_numeric"] = pd.to_numeric(df["Close"], errors="coerce")
 
-        # 1) Look for most recent trading date strictly before today
+        # ---- Step 1: Check strictly yesterday's date ----
+        yesterday = today_date - timedelta(days=1)
+        if yesterday in df["date_only"].unique():
+            y_rows = df[df["date_only"] == yesterday].sort_values("DateTime")
+            val = y_rows["Close_numeric"].dropna().iloc[-1]
+            return float(val), "yesterday_close"
+
+        # ---- Step 2: If yesterday missing, fallback to latest trading day < today ----
         prev_dates = [d for d in sorted(df["date_only"].unique()) if d < today_date]
         if prev_dates:
             prev_trading_date = prev_dates[-1]
@@ -178,7 +56,7 @@ def get_robust_prev_close_from_hist(hist_df: pd.DataFrame, today_date: date):
             val = prev_rows["Close_numeric"].dropna().iloc[-1]
             return float(val), "prev_trading_date"
 
-        # 2) dedupe sequence approach
+        # ---- Step 3: dedupe closes if nothing else works ----
         closes_series = df["Close_numeric"].dropna().tolist()
         if not closes_series:
             return None, "no numeric closes"
@@ -193,9 +71,9 @@ def get_robust_prev_close_from_hist(hist_df: pd.DataFrame, today_date: date):
             return float(dedup[-2]), "dedup_second_last"
         else:
             return float(closes_series[-1]), "last_available"
+
     except Exception as exc:
         return None, f"error:{str(exc)[:120]}"
-
 
 # ------------------ Client check ------------------
 client = st.session_state.get("client")
