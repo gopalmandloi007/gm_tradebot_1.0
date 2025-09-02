@@ -38,7 +38,9 @@ def fetch_history(session_key: str, segment: str, token: str, frm: str, to: str)
                 df.columns = ["Datetime", "Open", "High", "Low", "Close", "Volume", "OI"]
             else:
                 raise ValueError(f"Unexpected columns: {df.shape[1]} for token {token}")
-            df["Datetime"] = pd.to_datetime(df["Datetime"], format="%d-%m-%Y %H:%M:%S")
+            
+            # Flexible date parsing
+            df["Datetime"] = pd.to_datetime(df["Datetime"], dayfirst=True, errors="coerce")
             return df
         except Exception as e:
             st.warning(f"Attempt {attempt} failed for {token}: {e}")
