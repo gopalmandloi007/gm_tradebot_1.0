@@ -111,36 +111,52 @@ def zip_csv_download(dfs: dict):
 def load_master(path="data/master/allmaster.csv"):
     return pd.read_csv(path)
 
+# Load data
 try:
     df_master = load_master()
 except Exception as e:
-    st.error(f"Master CSV load failed: {e}")
+    st.error(f"Failed to load CSV: {e}")
     st.stop()
 
-# Normalize column names: strip spaces and convert to uppercase
+# Normalize column names
 df_master.columns = df_master.columns.str.strip().str.upper()
 
-# Optional: display column names for debugging
+# Display columns for debugging
 st.write("Columns in DataFrame:", df_master.columns)
 
-# Check if expected columns exist
-required_columns = ["TRADINGSYM", "SEGMENT", "INSTRUMENT"]
-missing_columns = [col for col in required_columns if col not in df_master.columns]
-
-if missing_columns:
-    st.error(f"Missing columns in data: {missing_columns}")
+# Check required columns
+required_columns = ["TRADINGSYM", "SEGMENT", "INSTRUMENT TYPE"]
+missing_cols = [col for col in required_columns if col not in df_master.columns]
+if missing_cols:
+    st.error(f"Missing columns in data: {missing_cols}")
     st.stop()
+
+# Count distribution of 'SEGMENT'
+segment_counts = df_master['SEGMENT'].value_counts()
+st.write("Segment Distribution:", segment_counts)
 
 # Filter for NSE segment
 nse_df = df_master[df_master["SEGMENT"].astype(str).str.upper() == "NSE"]
-# Filter for Instrument Type 'EQ'
-instrument_df = df_master[df_master["INSTRUMENT"].astype(str).str.upper() == "EQ"]
+st.write(f"Total NSE symbols: {len(nse_df)}")
 
-# Extract unique trading symbols from NSE stocks
-symbols = nse_df["TRADINGSYM"].astype(str).unique().tolist()
+# Count distribution of 'INSTRUMENT TYPE' in NSE
+instrument_counts = nse_df['INSTRUMENT TYPE'].value_counts()
+st.write("Instrument Type Distribution in NSE:", instrument_counts)
 
-# Display total NSE symbols
-st.info(f"Total NSE symbols: {len(symbols)}")
+# Define desired instrument types
+desired_types = ["EQ", "SM", "IDX", "BE"]
+
+# Filter for desired instrument types (case-insensitive)
+filtered_df = nse_df[nse_df["INSTRUMENT TYPE"].astype(str).str.upper().isin(desired_types)]
+
+# Extract unique trading symbols after filtering
+symbols_filtered = filtered_df["TRADINGSYM"].astype(str).unique().tolist()
+
+# Display the count of filtered symbols
+st.write(f"Total symbols after filtering for {desired_types}: {len(symbols_filtered)}")
+
+# Optional: display first few symbols
+st.write("Sample symbols:", symbols_filtered[:10])
 
 # -----------------------
 # Fetch 5-year historical
