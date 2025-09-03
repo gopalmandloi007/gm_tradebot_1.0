@@ -16,18 +16,17 @@ st.title("📈 Candlestick, EMAs, Relative Strength & Volume — No Gaps (Fixed 
 # Utilities: robust CSV -> DataFrame (FIXED parser)
 # -------------------------
 def _clean_dt_str(s: pd.Series) -> pd.Series:
-    """Clean common artifacts: trailing .0 from numeric CSV exports, quotes, whitespace."""
     sc = s.astype(str).str.strip()
-    sc = sc.str.replace(r'\.0+$', '', regex=True)      # "020720250000.0" -> "020720250000"
-    sc = sc.str.replace(r'["\']', '', regex=True)      # remove quotes
-    sc = sc.str.replace(r'\s+', '', regex=True)        # remove stray spaces
+    sc = sc.str.replace(r'\.0+$', '', regex=True)
+    sc = sc.str.replace(r'["\']', '', regex=True)
+    sc = sc.str.replace(r'\s+', '', regex=True)
     return sc
 
 def _looks_like_ddmmyyyy_hhmm(val: str) -> bool:
-    return bool(re.fullmatch(r'\d{12}', val)) and 1 <= int(val[0:2]) <= 31 and 1 <= int(val[2:4]) <= 12 and 1900 <= int(val[4:8]) <= 2100
+    return bool(re.fullmatch(r'\d{12}', val)) and 1 <= int(val[0:2]) <= 31
 
 def _looks_like_ddmmyyyy(val: str) -> bool:
-    return bool(re.fullmatch(r'\d{8}', val)) and 1 <= int(val[0:2]) <= 31 and 1 <= int(val[2:4]) <= 12 and 1900 <= int(val[4:8]) <= 2100
+    return bool(re.fullmatch(r'\d{8}', val)) and 1 <= int(val[0:2]) <= 31
 
 def _looks_like_epoch_seconds(val: str) -> bool:
     return bool(re.fullmatch(r'\d{10}', val))
@@ -36,176 +35,77 @@ def _looks_like_epoch_millis(val: str) -> bool:
     return bool(re.fullmatch(r'\d{13}', val))
 
 def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
-    """
-    Robustly parse broker historical CSVs with many formats.
-    Key fixes:
-    - Do not treat ddmmyyyy or ddmmyyyyHHMM digit-strings as epoch.
-    - Try exact format parses first for digit-only patterns.
-    - Fallback to infer parsing and, only then, to epoch heuristics for true epoch-like strings.
-    - Deduplicate per calendar-day keeping the last intraday row.
-    """
-    if not isinstance(hist_csv, str) or not hist_csv.strip():
-        return pd.DataFrame()
-
+    if not hist_csv.strip(): return pd.DataFrame()
     txt = hist_csv.strip()
     lines = txt.splitlines()
-    if not lines:
-        return pd.DataFrame()
+    if not lines: return pd.DataFrame()
 
+    # auto-detect header
     first_line = lines[0].lower()
     header_indicators = ("date", "datetime", "open", "high", "low", "close", "volume", "oi", "timestamp")
     use_header = any(h in first_line for h in header_indicators)
 
-    # read CSV (flexible)
     try:
         if use_header:
             df = pd.read_csv(io.StringIO(txt))
         else:
             df = pd.read_csv(io.StringIO(txt), header=None)
-    except Exception:
-        try:
-            df = pd.read_csv(io.StringIO(txt), header=None, delim_whitespace=True)
-        except Exception:
-            return pd.DataFrame()
+    except:
+        return pd.DataFrame()
 
-    # Map columns to canonical names
-    cols = [str(c).lower() for c in df.columns.astype(str)]
-    if any("date" in c or "time" in c for c in cols):
-        col_map = {}
-        for c in df.columns:
-            lc = str(c).lower()
-            if "date" in lc or "time" in lc:
-                col_map[c] = "DateTime"
-            elif lc.startswith("open"):
-                col_map[c] = "Open"
-            elif lc.startswith("high"):
-                col_map[c] = "High"
-            elif lc.startswith("low"):
-                col_map[c] = "Low"
-            elif lc.startswith("close"):
-                col_map[c] = "Close"
-            elif "volume" in lc:
-                col_map[c] = "Volume"
-            elif lc == "oi":
-                col_map[c] = "OI"
-        df = df.rename(columns=col_map)
+    # Map columns
+    cols = [str(c).lower() for c in df.columns]
+    col_map = {}
+    for c in df.columns:
+        lc = str(c).lower()
+        if "date" in lc or "time" in lc: col_map[c] = "DateTime"
+        elif lc.startswith("open"): col_map[c] = "Open"
+        elif lc.startswith("high"): col_map[c] = "High"
+        elif lc.startswith("low"): col_map[c] = "Low"
+        elif lc.startswith("close"): col_map[c] = "Close"
+        elif "volume" in lc: col_map[c] = "Volume"
+        elif lc == "oi": col_map[c] = "OI"
+    if col_map: df = df.rename(columns=col_map)
     else:
-        # assume standard positions when header absent
         if df.shape[1] >= 6:
-            if df.shape[1] == 7:
-                df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume", "OI"]
-            else:
-                df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
-        else:
-            return pd.DataFrame()
+            df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
 
-    if "DateTime" not in df.columns:
-        return pd.DataFrame()
-
-    # Clean DateTime strings
-    series_raw = df["DateTime"]
-    series = _clean_dt_str(series_raw)
-
-    # Pre-allocate result dt Series
-    dt = pd.Series([pd.NaT] * len(series), index=series.index, dtype="datetime64[ns]")
-
-    # 1) If a majority of values match ddmmyyyyHHMM -> parse with that format
-    sample = series.dropna()
-    n = len(sample)
-    if n == 0:
-        return pd.DataFrame()
-
-    n_ddmmhh = sample.apply(lambda v: _looks_like_ddmmyyyy_hhmm(v)).sum()
-    n_ddmm = sample.apply(lambda v: _looks_like_ddmmyyyy(v)).sum()
-
-    # If many match 12-digit ddmmyyyyHHMM, parse them first
-    if n_ddmmhh >= max(1, int(0.35 * n)):  # heuristic threshold
-        parsed = pd.to_datetime(series, format="%d%m%Y%H%M", errors="coerce")
-        dt = dt.fillna(parsed)
-
-    # If many match 8-digit ddmmyyyy (and not parsed above), parse
-    if n_ddmm >= max(1, int(0.35 * n)):
-        parsed = pd.to_datetime(series, format="%d%m%Y", errors="coerce")
-        dt = dt.fillna(parsed)
-
-    # 2) Try common explicit formats for any remaining NaT
-    if dt.isna().any():
-        formats_to_try = [
-            "%d-%m-%Y %H:%M", "%d-%m-%Y %H:%M:%S",
-            "%d-%m-%Y", "%d/%m/%Y", "%d/%m/%Y %H:%M",
-            "%Y-%m-%d %H:%M:%S", "%Y-%m-%d",
-            "%d%m%Y%H%M", "%d%m%Y"
-        ]
-        for fmt in formats_to_try:
-            if not dt.isna().any():
-                break
-            parsed = pd.to_datetime(series, format=fmt, dayfirst=True, errors="coerce")
-            dt = dt.fillna(parsed)
-
-    # 3) Try pandas infer (dayfirst) for remaining
-    if dt.isna().any():
-        parsed = pd.to_datetime(series, dayfirst=True, infer_datetime_format=True, errors="coerce")
-        dt = dt.fillna(parsed)
-
-    # 4) Only now, when entries look like real epoch strings (10 or 13 digits) attempt epoch conversion
-    if dt.isna().any():
-        def try_epoch_parse(v):
-            if not isinstance(v, str) or not v.isdigit():
-                return pd.NaT
-            if _looks_like_epoch_millis(v):
-                return pd.to_datetime(int(v), unit="ms", errors="coerce")
-            if _looks_like_epoch_seconds(v):
-                return pd.to_datetime(int(v), unit="s", errors="coerce")
-            return pd.NaT
-        parsed_epoch = series.apply(lambda v: try_epoch_parse(v))
-        dt = dt.fillna(parsed_epoch)
-
-    # 5) Final fallback: try parsing without dayfirst
-    if dt.isna().any():
-        parsed = pd.to_datetime(series, infer_datetime_format=True, errors="coerce")
-        dt = dt.fillna(parsed)
-
+    # Clean DateTime
+    series = _clean_dt_str(df["DateTime"])
+    dt = pd.to_datetime(series, dayfirst=True, errors="coerce")
     df["DateTime"] = dt
-    df = df.dropna(subset=["DateTime"]).copy()
-    if df.empty:
-        return pd.DataFrame()
+    df = df.dropna(subset=["DateTime"])
+    for col in ("Open","High","Low","Close","Volume","OI"):
+        if col in df.columns: df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Numeric conversion for OHLCV columns
-    for col in ("Open", "High", "Low", "Close", "Volume", "OI"):
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    # Normalize to Date (calendar day) and keep last intraday record per day
     df["Date"] = df["DateTime"].dt.normalize()
     df = df.sort_values("DateTime").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
+    df["DateStr"] = df["Date"].dt.strftime("%Y-%m-%d")
+    return df[["DateTime","Date","DateStr","Open","High","Low","Close","Volume"]]
 
-    # provide DateStr for categorical axis
-    df["DateStr"] = df["Date"].dt.strftime("%Y-%m-%d")  # ISO format for easy sorting & display
-
-    # return only core columns (preserve other for debugging if needed)
-    cols_keep = [c for c in ["DateTime", "Date", "DateStr", "Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+    # -----------------------
+# Prepare OHLCV CSV
+# -----------------------
+def prepare_ohlcv_for_download(df: pd.DataFrame) -> pd.DataFrame:
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    cols_keep = ["Date","Open","High","Low","Close","Volume"]
     return df[cols_keep].copy()
 
 # -------------------------
 # Fetch historical wrapper
 # -------------------------
-def fetch_historical(client, segment, token, days, buffer_days=30, show_raw=False):
+def fetch_historical_5yr(client, segment, token):
     today = datetime.today()
-    frm = (today - timedelta(days=days + buffer_days)).strftime("%d%m%Y%H%M")
+    frm = (today - timedelta(days=5*365 + 30)).strftime("%d%m%Y%H%M")
     to = today.strftime("%d%m%Y%H%M")
     try:
         raw = client.historical_csv(segment=segment, token=token, timeframe="day", frm=frm, to=to)
     except Exception as e:
-        st.error(f"Historical API failed: {e}")
+        st.warning(f"Failed fetch for {token}: {e}")
         return pd.DataFrame()
-    raw_text = str(raw) if raw is not None else ""
-    if show_raw:
-        st.text_area("Raw historical CSV (first 4000 chars)", raw_text[:4000], height=220)
-    df = read_hist_csv_to_df(raw_text)
-    if df.empty:
-        return df
-    df = df.sort_values("Date").tail(days).reset_index(drop=True)
-    return df
+    if not raw or not raw.strip(): return pd.DataFrame()
+    return read_hist_csv_to_df(raw)
 
 # -------------------------
 # Load master & UI defaults (NSE, NIFTY 500)
