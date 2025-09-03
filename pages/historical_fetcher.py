@@ -125,7 +125,7 @@ df_master.columns = df_master.columns.str.strip().str.upper()
 st.write("Columns in DataFrame:", df_master.columns)
 
 # Check required columns
-required_columns = ["TRADINGSYM", "SEGMENT", "INSTRUMENT TYPE"]
+required_columns = ["TRADINGSYM", "SEGMENT", "INSTRUMENT"]
 missing_cols = [col for col in required_columns if col not in df_master.columns]
 if missing_cols:
     st.error(f"Missing columns in data: {missing_cols}")
@@ -139,15 +139,15 @@ st.write("Segment Distribution:", segment_counts)
 nse_df = df_master[df_master["SEGMENT"].astype(str).str.upper() == "NSE"]
 st.write(f"Total NSE symbols: {len(nse_df)}")
 
-# Count distribution of 'INSTRUMENT TYPE' in NSE
-instrument_counts = nse_df['INSTRUMENT TYPE'].value_counts()
-st.write("Instrument Type Distribution in NSE:", instrument_counts)
+# Count distribution of 'INSTRUMENT' in NSE
+instrument_counts = nse_df['INSTRUMENT'].value_counts()
+st.write("Instrument Distribution in NSE:", instrument_counts)
 
 # Define desired instrument types
 desired_types = ["EQ", "SM", "IDX", "BE"]
 
 # Filter for desired instrument types (case-insensitive)
-filtered_df = nse_df[nse_df["INSTRUMENT TYPE"].astype(str).str.upper().isin(desired_types)]
+filtered_df = nse_df[nse_df["INSTRUMENT"].astype(str).str.upper().isin(desired_types)]
 
 # Extract unique trading symbols after filtering
 symbols_filtered = filtered_df["TRADINGSYM"].astype(str).unique().tolist()
