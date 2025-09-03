@@ -104,15 +104,18 @@ except Exception as e:
     st.error(f"Master CSV load failed: {e}")
     st.stop()
 
-# Allowed segments list
+# Print unique values for debugging
+st.write("Unique SEGMENT values before normalization:", df_master["SEGMENT"].dropna().unique())
+
+# Normalize 'SEGMENT' column
+df_master["SEGMENT"] = df_master["SEGMENT"].astype(str).str.strip().str.upper()
+
+# Now filter
 allowed_segments = ["BE", "EQ", "SM", "IDX"]
+filtered_df = df_master[df_master["SEGMENT"].isin(allowed_segments)]
 
-# Filter based on allowed segments
-filtered_df = df_master[df_master["SEGMENT"].astype(str).str.upper().isin(allowed_segments)]
-
-# Extract symbols
+st.write("Filtered data shape:", filtered_df.shape)
 symbols = filtered_df["TRADINGSYM"].astype(str).unique().tolist()
-
 st.info(f"Total symbols after filtering: {len(symbols)}")
 
 # Function to fetch 5-year historical data
