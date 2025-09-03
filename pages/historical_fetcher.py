@@ -142,7 +142,7 @@ if st.button("Fetch 5-Year OHLCV for All NSE Symbols"):
         st.stop()
 
     # Chunk size for batch processing
-    CHUNK_SIZE = 1000  # Adjust as needed
+    CHUNK_SIZE = 100  # Adjust as needed
     total_symbols = len(symbols)
     chunks = [symbols[i:i + CHUNK_SIZE] for i in range(0, total_symbols, CHUNK_SIZE)]
     zip_files = []
