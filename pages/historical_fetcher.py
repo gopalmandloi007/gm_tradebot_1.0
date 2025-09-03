@@ -126,8 +126,8 @@ nse_df = df_master[df_master[0].astype(str).str.upper() == "NSE"]
 # Define desired instrument types
 desired_instruments = ["EQ", "BE", "SM", "IDX"]
 
-# Filter for instrument types (Column 4)
-filtered_df = nse_df[nse_df[4].astype(str).str.upper().isin(desired_instruments)]
+# Filter for instrument types (Column 2)
+filtered_df = nse_df[nse_df[2].astype(str).str.upper().isin(desired_instruments)]
 
 # Extract symbols (Column 2)
 symbols = filtered_df[2].astype(str).unique().tolist()
