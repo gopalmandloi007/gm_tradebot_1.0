@@ -136,18 +136,11 @@ def create_zip_for_chunk(dfs_chunk, zip_path):
 
 # Main process on button click
 if st.button("Fetch 5-Year OHLCV for All NSE Symbols"):
-    client = st.session_state.get("client")
-    if not client:
-        st.error("Please login first.")
-        st.stop()
-
-    # Chunk size for batch processing
-    CHUNK_SIZE = 100  # Adjust as needed
-    total_symbols = len(symbols)
-    chunks = [symbols[i:i + CHUNK_SIZE] for i in range(0, total_symbols, CHUNK_SIZE)]
+    # ... existing setup code ...
     zip_files = []
 
-    progress_placeholder = st.empty()
+    progress_bar = st.progress(0)
+    total_chunks = len(chunks)
 
     for idx, chunk in enumerate(chunks, 1):
         dfs_chunk = {}
@@ -160,13 +153,16 @@ if st.button("Fetch 5-Year OHLCV for All NSE Symbols"):
             except Exception as e:
                 st.warning(f"Fetch failed for {sym}: {e}")
         zip_name = f"nse_chunk_{idx}.zip"
-        create_zip_for_chunk(dfs_chunk, zip_name)
-        zip_files.append(zip_name)
+        try:
+            create_zip_for_chunk(dfs_chunk, zip_name)
+            zip_files.append(zip_name)
+        except Exception as e:
+            st.error(f"Failed to create ZIP for chunk {idx}: {e}")
 
-        # Update progress
-        progress_placeholder.text(f"Processed chunk {idx}/{len(chunks)}: {len(dfs_chunk)} files.")
-    
-    # Show download buttons for each ZIP
+        # Update progress bar
+        progress_bar.progress(idx / total_chunks)
+        st.write(f"Processed chunk {idx}/{total_chunks}")
+
     st.success(f"Created {len(zip_files)} ZIP files.")
     for zf in zip_files:
         with open(zf, 'rb') as f:
