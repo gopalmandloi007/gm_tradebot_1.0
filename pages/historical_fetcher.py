@@ -129,13 +129,22 @@ desired_instruments = ["EQ", "BE", "SM", "IDX"]
 # Filter for instrument types (Column 4)
 filtered_df = nse_df[nse_df[4].astype(str).str.upper().isin(desired_instruments)]
 
-# Extract symbols and instrument types for reference
-symbols_with_instrument = filtered_df[[2, 4]]  # SYMBOL and INSTRUMENT TYPE
+# Extract symbols (Column 2)
+symbols = filtered_df[2].astype(str).unique().tolist()
 
-# List of symbols
-symbols_filtered = symbols_with_instrument[2].astype(str).unique().tolist()
+# Create a list of symbols with their instrument types (optional)
+symbols_with_instrument = filtered_df[[2, 4]]
 
-st.info(f"Total NSE symbols with desired instruments ({len(symbols_filtered)}): {len(filtered_df)}")
+# Count total symbols
+total_symbols = len(symbols)
+
+# Display info
+st.info(f"Total NSE symbols with desired instruments: {total_symbols}")
+
+# Now, you can use 'symbols' or 'total_symbols' as needed
+# Example: print or display in Streamlit
+st.write("Symbols:", symbols)
+st.write("Total symbols:", total_symbols)
 
 # -----------------------
 # Fetch 5-year historical
