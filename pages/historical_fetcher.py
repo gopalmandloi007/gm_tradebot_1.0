@@ -9,10 +9,89 @@ import re
 st.set_page_config(layout="wide")
 st.title("📥 Historical OHLCV Download — NSE Stocks & Indices (5 Years)")
 
-# (Your existing helper functions: _clean_dt_str, _looks_like_ddmmyyyy_hhmm, etc.)
-# For brevity, assume they are already included here as in your original code.
+# --- Your helper functions start here ---
 
-# ... [Include your helper functions here: _clean_dt_str, read_hist_csv_to_df, prepare_ohlcv_for_download, etc.] ...
+def _clean_dt_str(s: pd.Series) -> pd.Series:
+    sc = s.astype(str).str.strip()
+    sc = sc.str.replace(r'\.0+$', '', regex=True)
+    sc = sc.str.replace(r'["\']', '', regex=True)
+    sc = sc.str.replace(r'\s+', '', regex=True)
+    return sc
+
+def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
+    if not hist_csv.strip():
+        return pd.DataFrame()
+    txt = hist_csv.strip()
+    lines = txt.splitlines()
+    if not lines:
+        return pd.DataFrame()
+
+    # auto-detect header
+    first_line = lines[0].lower()
+    header_indicators = ("date", "datetime", "open", "high", "low", "close", "volume", "oi", "timestamp")
+    use_header = any(h in first_line for h in header_indicators)
+
+    try:
+        if use_header:
+            df = pd.read_csv(io.StringIO(txt))
+        else:
+            df = pd.read_csv(io.StringIO(txt), header=None)
+    except:
+        return pd.DataFrame()
+
+    # Map columns
+    cols = [str(c).lower() for c in df.columns]
+    col_map = {}
+    for c in df.columns:
+        lc = str(c).lower()
+        if "date" in lc or "time" in lc:
+            col_map[c] = "DateTime"
+        elif lc.startswith("open"):
+            col_map[c] = "Open"
+        elif lc.startswith("high"):
+            col_map[c] = "High"
+        elif lc.startswith("low"):
+            col_map[c] = "Low"
+        elif lc.startswith("close"):
+            col_map[c] = "Close"
+        elif "volume" in lc:
+            col_map[c] = "Volume"
+        elif lc == "oi":
+            col_map[c] = "OI"
+    if col_map:
+        df = df.rename(columns=col_map)
+    else:
+        if df.shape[1] >= 6:
+            df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
+
+    # Clean DateTime
+    series = _clean_dt_str(df["DateTime"])
+    dt = pd.to_datetime(series, dayfirst=True, errors="coerce")
+    df["DateTime"] = dt
+    df = df.dropna(subset=["DateTime"])
+
+    for col in ("Open", "High", "Low", "Close", "Volume", "OI"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df["Date"] = df["DateTime"].dt.normalize()
+    df = df.sort_values("DateTime").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
+    df["DateStr"] = df["Date"].dt.strftime("%Y-%m-%d")
+    return df[["DateTime", "Date", "DateStr", "Open", "High", "Low", "Close", "Volume"]]
+
+def prepare_ohlcv_for_download(df: pd.DataFrame) -> pd.DataFrame:
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    cols_keep = ["Date", "Open", "High", "Low", "Close", "Volume"]
+    return df[cols_keep].copy()
+
+# --- Your other helper functions as needed ---
+
+# ... (rest of your helper functions) ...
+
+# --- End of helper functions ---
+
+# Your main code continues here...
 
 # Load master CSV
 @st.cache_data
@@ -97,7 +176,3 @@ if st.button("Fetch 5-Year OHLCV for All NSE Symbols"):
                 file_name=zf,
                 mime="application/zip"
             )
-
-    # Optional cleanup: delete temp ZIP files after download
-    # for zf in zip_files:
-    #     os.remove(zf)
