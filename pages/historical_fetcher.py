@@ -111,7 +111,7 @@ st.info(f"Total NSE symbols: {len(symbols)}")
 # Function to fetch 5-year historical data
 def fetch_historical_5yr(client, segment, token):
     today = datetime.today()
-    frm = (today - timedelta(days=5*365 + 30)).strftime("%d%m%Y%H%M")
+    frm = (today - timedelta(days=1*365 + 30)).strftime("%d%m%Y%H%M")
     to = today.strftime("%d%m%Y%H%M")
     try:
         raw = client.historical_csv(segment=segment, token=token, timeframe="day", frm=frm, to=to)
