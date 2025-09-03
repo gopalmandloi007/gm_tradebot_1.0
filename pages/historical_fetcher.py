@@ -112,7 +112,7 @@ def zip_csv_download(dfs: dict):
 # -----------------------
 @st.cache_data
 def load_master(path="data/master/allmaster.csv"):
-    return pd.read_csv(path)
+    return pd.read_csv(path, header=None)
 
 try:
     df_master = load_master()
@@ -120,9 +120,22 @@ except Exception as e:
     st.error(f"Master CSV load failed: {e}")
     st.stop()
 
-nse_df = df_master[df_master["SEGMENT"].astype(str).str.upper() == "NSE"]
-symbols = nse_df["TRADINGSYM"].astype(str).unique().tolist()
-st.info(f"Total NSE symbols: {len(symbols)}")
+# Filter for NSE segment (Column 0)
+nse_df = df_master[df_master[0].astype(str).str.upper() == "NSE"]
+
+# Define desired instrument types
+desired_instruments = ["EQ", "BE", "SM", "IDX"]
+
+# Filter for instrument types (Column 4)
+filtered_df = nse_df[nse_df[4].astype(str).str.upper().isin(desired_instruments)]
+
+# Extract symbols and instrument types for reference
+symbols_with_instrument = filtered_df[[2, 4]]  # SYMBOL and INSTRUMENT TYPE
+
+# List of symbols
+symbols_filtered = symbols_with_instrument[2].astype(str).unique().tolist()
+
+st.info(f"Total NSE symbols with desired instruments ({len(symbols_filtered)}): {len(filtered_df)}")
 
 # -----------------------
 # Fetch 5-year historical
