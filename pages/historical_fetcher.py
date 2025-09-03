@@ -134,7 +134,7 @@ if missing_columns:
 # Filter for NSE segment
 nse_df = df_master[df_master["SEGMENT"].astype(str).str.upper() == "NSE"]
 # Filter for Instrument Type 'EQ'
-instrument_type_df = df_master[df_master["INSTRUMENT"].astype(str).str.upper() == "EQ"]
+instrument_df = df_master[df_master["INSTRUMENT"].astype(str).str.upper() == "EQ"]
 
 # Extract unique trading symbols from NSE stocks
 symbols = nse_df["TRADINGSYM"].astype(str).unique().tolist()
