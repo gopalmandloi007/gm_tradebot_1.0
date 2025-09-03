@@ -117,18 +117,29 @@ except Exception as e:
     st.error(f"Master CSV load failed: {e}")
     st.stop()
 
-# Check column names for confirmation
-# print(df_master.columns)
+# Normalize column names: strip spaces and convert to uppercase
+df_master.columns = df_master.columns.str.strip().str.upper()
+
+# Optional: display column names for debugging
+st.write("Columns in DataFrame:", df_master.columns)
+
+# Check if expected columns exist
+required_columns = ["TRADINGSYM", "SEGMENT", "INSTRUMENT TYPE"]
+missing_columns = [col for col in required_columns if col not in df_master.columns]
+
+if missing_columns:
+    st.error(f"Missing columns in data: {missing_columns}")
+    st.stop()
 
 # Filter for NSE segment
 nse_df = df_master[df_master["SEGMENT"].astype(str).str.upper() == "NSE"]
-
-# Filter for Instrument Type 'EQ' (case-insensitive)
+# Filter for Instrument Type 'EQ'
 instrument_type_df = df_master[df_master["INSTRUMENT TYPE"].astype(str).str.upper() == "EQ"]
 
-# Get unique trading symbols from NSE stocks
+# Extract unique trading symbols from NSE stocks
 symbols = nse_df["TRADINGSYM"].astype(str).unique().tolist()
 
+# Display total NSE symbols
 st.info(f"Total NSE symbols: {len(symbols)}")
 
 # -----------------------
