@@ -106,7 +106,9 @@ def zip_csv_download(dfs: dict):
         file_name="NSE_5yr_OHLCV.zip",
         mime="application/zip"
     )
-
+# -----------------------
+# LOAD DATA FILETR
+# -----------------------
 @st.cache_data
 def load_master(path="data/master/allmaster.csv"):
     return pd.read_csv(path)
@@ -184,8 +186,10 @@ if st.button("Fetch 5-Year OHLCV for All NSE Symbols"):
 
     dfs_all = {}
     progress_text = st.empty()
-    total = len(symbols)
-    for i, sym in enumerate(symbols, 1):
+
+    # Use symbols_filtered which is defined earlier
+    total = len(symbols_filtered)  # Corrected here
+    for i, sym in enumerate(symbols_filtered, 1):  # Corrected here
         try:
             token_row = nse_df[nse_df["TRADINGSYM"] == sym].iloc[0]
             df_sym = fetch_historical_5yr(client, token_row["SEGMENT"], token_row["TOKEN"])
