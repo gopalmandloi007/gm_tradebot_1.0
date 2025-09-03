@@ -3,8 +3,8 @@ import pandas as pd
 import io
 import zipfile
 from datetime import datetime, timedelta
-import traceback
 import re
+import requests  # For API requests later
 
 st.set_page_config(layout="wide")
 st.title("📥 Historical OHLCV Download — NSE Stocks & Indices (5 Years)")
@@ -32,10 +32,12 @@ def _looks_like_epoch_millis(val: str) -> bool:
     return bool(re.fullmatch(r'\d{13}', val))
 
 def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
-    if not hist_csv.strip(): return pd.DataFrame()
+    if not hist_csv.strip():
+        return pd.DataFrame()
     txt = hist_csv.strip()
     lines = txt.splitlines()
-    if not lines: return pd.DataFrame()
+    if not lines:
+        return pd.DataFrame()
 
     # auto-detect header
     first_line = lines[0].lower()
@@ -55,14 +57,22 @@ def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
     col_map = {}
     for c in df.columns:
         lc = str(c).lower()
-        if "date" in lc or "time" in lc: col_map[c] = "DateTime"
-        elif lc.startswith("open"): col_map[c] = "Open"
-        elif lc.startswith("high"): col_map[c] = "High"
-        elif lc.startswith("low"): col_map[c] = "Low"
-        elif lc.startswith("close"): col_map[c] = "Close"
-        elif "volume" in lc: col_map[c] = "Volume"
-        elif lc == "oi": col_map[c] = "OI"
-    if col_map: df = df.rename(columns=col_map)
+        if "date" in lc or "time" in lc:
+            col_map[c] = "DateTime"
+        elif lc.startswith("open"):
+            col_map[c] = "Open"
+        elif lc.startswith("high"):
+            col_map[c] = "High"
+        elif lc.startswith("low"):
+            col_map[c] = "Low"
+        elif lc.startswith("close"):
+            col_map[c] = "Close"
+        elif "volume" in lc:
+            col_map[c] = "Volume"
+        elif lc == "oi":
+            col_map[c] = "OI"
+    if col_map:
+        df = df.rename(columns=col_map)
     else:
         if df.shape[1] >= 6:
             df.columns = ["DateTime", "Open", "High", "Low", "Close", "Volume"]
@@ -72,13 +82,14 @@ def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
     dt = pd.to_datetime(series, dayfirst=True, errors="coerce")
     df["DateTime"] = dt
     df = df.dropna(subset=["DateTime"])
-    for col in ("Open","High","Low","Close","Volume","OI"):
-        if col in df.columns: df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in ("Open", "High", "Low", "Close", "Volume", "OI"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df["Date"] = df["DateTime"].dt.normalize()
     df = df.sort_values("DateTime").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
     df["DateStr"] = df["Date"].dt.strftime("%Y-%m-%d")
-    return df[["DateTime","Date","DateStr","Open","High","Low","Close","Volume"]]
+    return df[["DateTime", "Date", "DateStr", "Open", "High", "Low", "Close", "Volume"]]
 
 # -----------------------
 # Prepare OHLCV CSV
@@ -86,7 +97,7 @@ def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
 def prepare_ohlcv_for_download(df: pd.DataFrame) -> pd.DataFrame:
     if "Date" in df.columns:
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
-    cols_keep = ["Date","Open","High","Low","Close","Volume"]
+    cols_keep = ["Date", "Open", "High", "Low", "Close", "Volume"]
     return df[cols_keep].copy()
 
 # -----------------------
@@ -112,7 +123,8 @@ def zip_csv_download(dfs: dict):
 # -----------------------
 @st.cache_data
 def load_master(path="data/master/allmaster.csv"):
-    return pd.read_csv(path, header=None)
+    # Corrected: load with header row if present
+    return pd.read_csv(path, header=0)
 
 try:
     df_master = load_master()
@@ -132,22 +144,61 @@ filtered_df = nse_df[nse_df[4].astype(str).str.upper().isin(desired_instruments)
 # Extract symbols (Column 2)
 symbols = filtered_df[2].astype(str).unique().tolist()
 
-# Create a list of symbols with their instrument types (optional)
-symbols_with_instrument = filtered_df[[2, 4]]
-
 # Count total symbols
 total_symbols = len(symbols)
 
 # Display info
 st.info(f"Total NSE symbols with desired instruments: {total_symbols}")
-
-# Now, you can use 'symbols' or 'total_symbols' as needed
-# Example: print or display in Streamlit
 st.write("Symbols:", symbols)
-st.write("Total symbols:", total_symbols)
 
 # -----------------------
-# Fetch 5-year historical
+# Prepare data for API request
+# -----------------------
+
+# Extract Segment and Token columns (Column 1 and 2)
+segment_series = filtered_df[1].astype(str)
+token_series = filtered_df[2].astype(str)
+
+# Create a list of dictionaries for each symbol with required info
+api_data_list = []
+
+for idx, symbol in enumerate(symbols):
+    segment = segment_series.iloc[idx]
+    token = token_series.iloc[idx]
+    api_data = {
+        "symbol": symbol,
+        "segment": segment,
+        "token": token
+    }
+    api_data_list.append(api_data)
+
+# Example: Display the first few entries
+st.write("Sample data for API requests:", api_data_list[:5])
+
+# -----------------------
+# Example function to fetch historical data
+# -----------------------
+def fetch_historical_data(symbol, segment, token):
+    # Replace with your actual API endpoint
+    api_url = "https://api.example.com/historical"
+    params = {
+        "symbol": symbol,
+        "segment": segment,
+        "token": token,
+    }
+    try:
+        response = requests.get(api_url, params=params)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error(f"Failed to fetch data for {symbol} with status code {response.status_code}")
+            return None
+    except Exception as e:
+        st.error(f"Error fetching data for {symbol}: {e}")
+        return None
+
+# -----------------------
+# Fetch 5-year historical data
 # -----------------------
 def fetch_historical_5yr(client, segment, token):
     today = datetime.today()
@@ -158,7 +209,8 @@ def fetch_historical_5yr(client, segment, token):
     except Exception as e:
         st.warning(f"Failed fetch for {token}: {e}")
         return pd.DataFrame()
-    if not raw or not raw.strip(): return pd.DataFrame()
+    if not raw or not raw.strip():
+        return pd.DataFrame()
     return read_hist_csv_to_df(raw)
 
 # -----------------------
@@ -175,8 +227,8 @@ if st.button("Fetch 5-Year OHLCV for All NSE Symbols"):
     total = len(symbols)
     for i, sym in enumerate(symbols, 1):
         try:
-            token_row = nse_df[nse_df["TRADINGSYM"] == sym].iloc[0]
-            df_sym = fetch_historical_5yr(client, token_row["SEGMENT"], token_row["TOKEN"])
+            token_row = nse_df[nse_df[2] == sym].iloc[0]
+            df_sym = fetch_historical_5yr(client, token_row[1], token_row[2])
             if not df_sym.empty:
                 dfs_all[sym] = df_sym
             progress_text.text(f"Fetched {i}/{total}: {sym} | collected: {len(dfs_all)}")
