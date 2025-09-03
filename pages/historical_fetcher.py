@@ -104,17 +104,23 @@ except Exception as e:
     st.error(f"Master CSV load failed: {e}")
     st.stop()
 
-# Print unique values for debugging
+# Print unique values to understand data
 st.write("Unique SEGMENT values before normalization:", df_master["SEGMENT"].dropna().unique())
 
-# Normalize 'SEGMENT' column
+# Normalize 'SEGMENT' column: strip spaces and convert to uppercase
 df_master["SEGMENT"] = df_master["SEGMENT"].astype(str).str.strip().str.upper()
 
-# Now filter
+# Check again after normalization
+st.write("Unique SEGMENT values after normalization:", df_master["SEGMENT"].dropna().unique())
+
+# Filter based on allowed segments
 allowed_segments = ["BE", "EQ", "SM", "IDX"]
 filtered_df = df_master[df_master["SEGMENT"].isin(allowed_segments)]
 
+# Show filtered shape for debugging
 st.write("Filtered data shape:", filtered_df.shape)
+
+# Extract symbols
 symbols = filtered_df["TRADINGSYM"].astype(str).unique().tolist()
 st.info(f"Total symbols after filtering: {len(symbols)}")
 
