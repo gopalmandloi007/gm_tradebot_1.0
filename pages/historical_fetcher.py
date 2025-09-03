@@ -136,12 +136,22 @@ def create_zip_for_chunk(dfs_chunk, zip_path):
 
 # Main process on button click
 if st.button("Fetch 5-Year OHLCV for All NSE Symbols"):
-    # ... existing setup code ...
+    client = st.session_state.get("client")
+    if not client:
+        st.error("Please login first.")
+        st.stop()
+
+    # Chunk size for batch processing
+    CHUNK_SIZE = 100  # Adjust as needed
+    total_symbols = len(symbols)
+
+    # Make sure to define chunks here
+    chunks = [symbols[i:i + CHUNK_SIZE] for i in range(0, total_symbols, CHUNK_SIZE)]
+
+    total_chunks = len(chunks)
     zip_files = []
 
     progress_bar = st.progress(0)
-    total_chunks = len(chunks)
-
     for idx, chunk in enumerate(chunks, 1):
         dfs_chunk = {}
         for sym in chunk:
