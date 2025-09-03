@@ -104,9 +104,16 @@ except Exception as e:
     st.error(f"Master CSV load failed: {e}")
     st.stop()
 
-nse_df = df_master[df_master["SEGMENT"].astype(str).str.upper() == "NSE"]
-symbols = nse_df["TRADINGSYM"].astype(str).unique().tolist()
-st.info(f"Total NSE symbols: {len(symbols)}")
+# Allowed segments list
+allowed_segments = ["BE", "EQ", "SM", "IDX"]
+
+# Filter based on allowed segments
+filtered_df = df_master[df_master["SEGMENT"].astype(str).str.upper().isin(allowed_segments)]
+
+# Extract symbols
+symbols = filtered_df["TRADINGSYM"].astype(str).unique().tolist()
+
+st.info(f"Total symbols after filtering: {len(symbols)}")
 
 # Function to fetch 5-year historical data
 def fetch_historical_5yr(client, segment, token):
