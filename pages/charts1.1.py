@@ -1,10 +1,7 @@
-# paste this entire file in place of your current Streamlit page
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import io
-import csv as pycsv
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 import traceback
@@ -73,23 +70,7 @@ def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
 
     # Clean DateTime
     series = _clean_dt_str(df["DateTime"])
-    # Try many formats robustly
-    # If values look like ddmmyyyyHHMM -> parse with that format; else fallback to dayfirst parse
-    example = series.iloc[0] if len(series) > 0 else ""
-    try:
-        if _looks_like_ddmmyyyy_hhmm(example):
-            dt = pd.to_datetime(series, format="%d%m%Y%H%M", errors="coerce")
-        elif _looks_like_ddmmyyyy(example):
-            dt = pd.to_datetime(series, format="%d%m%Y", errors="coerce")
-        elif _looks_like_epoch_seconds(example):
-            dt = pd.to_datetime(series.astype(float), unit="s", errors="coerce")
-        elif _looks_like_epoch_millis(example):
-            dt = pd.to_datetime(series.astype(float), unit="ms", errors="coerce")
-        else:
-            dt = pd.to_datetime(series, dayfirst=True, errors="coerce")
-    except Exception:
-        dt = pd.to_datetime(series, dayfirst=True, errors="coerce")
-
+    dt = pd.to_datetime(series, dayfirst=True, errors="coerce")
     df["DateTime"] = dt
     df = df.dropna(subset=["DateTime"])
     for col in ("Open","High","Low","Close","Volume","OI"):
@@ -100,24 +81,14 @@ def read_hist_csv_to_df(hist_csv: str) -> pd.DataFrame:
     df["DateStr"] = df["Date"].dt.strftime("%Y-%m-%d")
     return df[["DateTime","Date","DateStr","Open","High","Low","Close","Volume"]]
 
-
-# ----------------------- 
+    # -----------------------
 # Prepare OHLCV CSV
 # -----------------------
 def prepare_ohlcv_for_download(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Return a DataFrame where Date is string in DDMMYYYY format (to preserve leading zeros).
-    """
-    out = df.copy()
-    if "Date" in out.columns:
-        out["Date"] = pd.to_datetime(out["Date"], errors="coerce").dt.strftime("%d%m%Y")
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
     cols_keep = ["Date","Open","High","Low","Close","Volume"]
-    # ensure these columns exist (fill with NaN if missing)
-    for c in cols_keep:
-        if c not in out.columns:
-            out[c] = None
-    return out[cols_keep].copy()
-
+    return df[cols_keep].copy()
 
 # -------------------------
 # Fetch historical wrapper
@@ -134,8 +105,7 @@ def fetch_historical_5yr(client, segment, token):
     if not raw or not raw.strip(): return pd.DataFrame()
     return read_hist_csv_to_df(raw)
 
-
-# ------------------------- 
+# -------------------------
 # Load master & UI defaults (NSE, NIFTY 500)
 # -------------------------
 @st.cache_data
@@ -196,24 +166,6 @@ rs_sma_period = st.number_input("RS SMA Period", min_value=2, max_value=500, val
 
 append_today_quote = st.checkbox("Append today's live quote (use quotes API)", value=False)
 show_raw_hist = st.checkbox("Show raw historical CSV (debug)", value=False)
-
-# helper wrapper to fetch historical with options
-def fetch_historical(client, segment, token, days_back, buffer_days=30, show_raw=False):
-    # use client's historical csv if available else fallback to fetch_historical_5yr
-    try:
-        # some clients may provide a convenience method: historical_csv or history
-        if hasattr(client, "historical_csv"):
-            raw = client.historical_csv(segment=segment, token=token, timeframe="day",
-                                        frm=(datetime.today()-timedelta(days=days_back+buffer_days)).strftime("%d%m%Y%H%M"),
-                                        to=datetime.today().strftime("%d%m%Y%H%M"))
-            if show_raw:
-                st.code(raw[:1000])
-            return read_hist_csv_to_df(raw)
-        else:
-            return fetch_historical_5yr(client, segment, token)
-    except Exception:
-        return fetch_historical_5yr(client, segment, token)
-
 
 if st.button("Show Chart"):
     try:
@@ -329,30 +281,14 @@ if st.button("Show Chart"):
             # RS download
             st.markdown("#### Download Relative Strength Data")
             rs_display_cols = ["Date", "StockClose", "IndexClose", "RS", "RS_SMA"]
-
-            # Prepare RS CSV with Date in DDMMYYYY format and quoted to preserve leading zeros
-            df_rs_out = df_rs.copy()
-            df_rs_out["Date"] = pd.to_datetime(df_rs_out["Date"], errors="coerce").dt.strftime("%d%m%Y")
-            csv_rs_io = io.StringIO()
-            df_rs_out[rs_display_cols].to_csv(csv_rs_io, index=False, quoting=pycsv.QUOTE_NONNUMERIC)
-            csv_rs = csv_rs_io.getvalue().encode("utf-8")
-
             st.dataframe(df_rs[rs_display_cols], use_container_width=True)
+            csv_rs = df_rs[rs_display_cols].to_csv(index=False).encode("utf-8")
             st.download_button(label="Download RS CSV", data=csv_rs, file_name=f"rs_{stock_symbol}_vs_{index_symbol}.csv", mime="text/csv")
 
         # Show OHLCV + EMAs table & CSV
         st.markdown("#### OHLCV + EMAs (latest rows)")
         st.dataframe(df_stock.tail(250), use_container_width=True)
-
-        # Prepare OHLCV+EMA CSV with Date in DDMMYYYY and quoted to preserve leading zeros
-        df_stock_out = df_stock.copy()
-        df_stock_out["Date"] = pd.to_datetime(df_stock_out["Date"], errors="coerce").dt.strftime("%d%m%Y")
-        # Ensure Date column present as first column in CSV
-        cols_order = ["Date"] + [c for c in df_stock_out.columns if c != "Date"]
-        csv_io = io.StringIO()
-        df_stock_out[cols_order].to_csv(csv_io, index=False, quoting=pycsv.QUOTE_NONNUMERIC)
-        csv = csv_io.getvalue().encode("utf-8")
-
+        csv = df_stock.to_csv(index=False).encode("utf-8")
         st.download_button(label="Download OHLCV+EMA CSV", data=csv, file_name=f"ohlcv_ema_{stock_symbol}.csv", mime="text/csv")
 
         # Helpful debug: show rows where DateStr maps to 2025-07-20 or 2025-07-30 if present (user reported issue)
