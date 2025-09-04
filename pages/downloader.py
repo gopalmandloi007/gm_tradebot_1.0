@@ -64,16 +64,29 @@ def fetch_hist_from_api(api_key: str, segment: str, token: str, days_back: int) 
         return parse_definedge_csv_text(resp.text)
     return pd.DataFrame()
 
-def upload_csv_to_github(file_name, file_bytes, api_key, owner, repo, branch):
+def get_github_file_sha(github_token, owner, repo, file_path):
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{file_path}"
+    headers = {
+        "Authorization": f"token {github_token}"
+    }
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        return response.json().get("sha")
+    return None
+
+def upload_csv_to_github(file_name, file_bytes, github_token, owner, repo, branch):
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{file_name}"
+    sha = get_github_file_sha(github_token, owner, repo, file_name)
     b64_content = base64.b64encode(file_bytes).decode()
     payload = {
         "message": f"Update {file_name}",
         "branch": branch,
-        "content": b64_content
+        "content": b64_content,
     }
+    if sha:
+        payload["sha"] = sha  # Include sha if file exists
     headers = {
-        "Authorization": f"token {api_key}",
+        "Authorization": f"token {github_token}",
         "Accept": "application/vnd.github.v3+json"
     }
     response = requests.put(url, json=payload, headers=headers)
@@ -139,7 +152,6 @@ if not api_key:
     api_key_input = st.text_input("Definedge API Session Key", type="password")
     if api_key_input:
         # Save to session for reuse
-        # Create a dummy object with attribute for simplicity
         class ClientObj:
             def __init__(self, key):
                 self.api_session_key = key
