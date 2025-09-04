@@ -18,9 +18,7 @@ import pandas as pd
 import io
 import zipfile
 import requests
-import time
 import os
-import math
 import traceback
 from typing import Optional
 
@@ -229,8 +227,20 @@ st.markdown("---")
 st.subheader("Order Estimate")
 st.write(f"Order Type: **{order_type}**  |  Price Type: **{price_type}**")
 st.write(f"Quantity: **{computed_qty}** (Lot size: {lot_size})")
+
+# Show persisted Price & Trigger Price explicitly + comparison with LTP
+if price_type != "MARKET":
+    colp1, colp2 = st.columns(2)
+    with colp1:
+        st.write(f"📝 Your Price: **₹{st.session_state.get('desired_price', 0):,.2f}**")
+    with colp2:
+        st.write(f"📈 Current LTP: **₹{current_ltp:,.2f}**")
+if price_type in ["SL-LIMIT", "SL-MARKET"]:
+    st.write(f"🎯 Trigger Price (your input): **₹{st.session_state.get('trigger_price', 0):,.2f}**")
+
 if lot_notice:
     st.warning(lot_notice)
+
 st.write(f"Estimated order value: **₹{est_value:,.2f}**")
 if cash_available > 0 and est_value > cash_available:
     st.error("Estimated order value exceeds available cash — place may fail or require margin.")
