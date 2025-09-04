@@ -47,7 +47,7 @@ def parse_definedge_csv_text(csv_text: str) -> pd.DataFrame:
     df = df.rename(columns={0: "DateTime", 1: "Open", 2: "High", 3: "Low", 4: "Close", 5: "Volume"})
     df = df[["DateTime","Open","High","Low","Close","Volume"]].copy()
     try:
-        df["Date"] = pd.to_datetime(df["DateTime"], format="%d%m%Y%H%M").dt.strftime("%d%m%Y")
+        df["Date"] = pd.to_datetime(df["DateTime"], format="%d%m%Y%H%M").dt.strftime("%d/%m/%Y")
         df = df[["Date","Open","High","Low","Close","Volume"]]
     except Exception:
         pass
