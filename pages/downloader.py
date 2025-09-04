@@ -119,23 +119,22 @@ df_seg = master_df[master_df["SEGMENT"].astype(str).str.upper() == ALLOWED_SEGME
 df_filtered = df_seg[df_seg["INSTRUMENT"].astype(str).str.upper().isin(ALLOWED_INSTRUMENTS)].copy()
 st.write(f"Filtered rows: {len(df_filtered)}")
 
-# User inputs
 days_back = st.number_input("Days back", min_value=10, max_value=3650, value=365)
 part_size = st.number_input("Part size", min_value=10, max_value=2000, value=300, step=50)
 
-# GitHub details
+# Get GitHub details from user
 github_owner = st.text_input("GitHub Username / Organization", value="gopalmandloi007")
 github_repo = st.text_input("Repository Name", value="gm_tradebot_1.0")
 github_branch = st.text_input("Branch", value="main")
 github_token = st.text_input("GitHub Personal Access Token", type="password")
 
-# API session key
+# Optional: session client for API key
 client = st.session_state.get("client")
 api_key = get_api_session_key_from_client(client)
 if not api_key:
     api_key = st.text_input("Definedge API Session Key", type="password")
 
-# Split data into parts
+# Split into parts
 if not df_filtered.empty:
     parts = chunk_df(df_filtered.reset_index(drop=True), int(part_size))
     st.subheader(f"Parts: {len(parts)} (≈ {part_size} symbols each)")
@@ -153,41 +152,30 @@ if not df_filtered.empty:
                     folder_path = "data/historical/"
                     file_path = f"{folder_path}{sym}_{token}.csv"
 
-                    # Get existing latest date
+                    # Check if data already exists and is latest
                     latest_existing_date = get_existing_latest_date(github_token, github_owner, github_repo, file_path)
 
-                    # Calculate target date based on days_back
-                    target_date = datetime.today() - timedelta(days=days_back)
+                    # Fetch new data
+                    df_new = fetch_hist_from_api(api_key, ALLOWED_SEGMENT, token, days_back)
 
-                    # Decide whether to fetch data
-                    fetch_data = False
-                    if latest_existing_date is None:
-                        fetch_data = True
-                    elif latest_existing_date < target_date:
-                        fetch_data = True
-                    else:
-                        fetch_data = False
+                    if not df_new.empty:
+                        # Convert "Date" to datetime
+                        df_new["Date"] = pd.to_datetime(df_new["Date"], dayfirst=True)
+                        max_new_date = df_new["Date"].max()
 
-                    if fetch_data:
-                        df_new = fetch_hist_from_api(api_key, ALLOWED_SEGMENT, token, days_back)
-                        if not df_new.empty:
-                            # Convert "Date" to datetime
-                            df_new["Date"] = pd.to_datetime(df_new["Date"], dayfirst=True)
-                            max_new_date = df_new["Date"].max()
-                            # Check if data covers the required date range
-                            if max_new_date >= target_date:
-                                csv_bytes = df_new.to_csv(index=False).encode("utf-8")
-                                upload_csv_to_github(file_path, csv_bytes, github_token, github_owner, github_repo, github_branch)
-                            else:
-                                st.info(f"Fetched data for {sym} does not cover the required date range.")
+                        if latest_existing_date is not None and latest_existing_date >= max_new_date:
+                            st.info(f"Data for {sym} is already up-to-date.")
+                            continue  # Skip to next symbol
                         else:
-                            st.warning(f"No data fetched for {sym}.")
+                            # Upload new data
+                            csv_bytes = df_new.to_csv(index=False).encode("utf-8")
+                            upload_csv_to_github(file_path, csv_bytes, github_token, github_owner, github_repo, github_branch)
                     else:
-                        st.info(f"Existing data for {sym} is already up-to-date.")
+                        st.warning(f"No data fetched for {sym}.")
 
                 st.success("All CSV files uploaded to GitHub for this part.")
 
-    # Option to upload all at once
+    # Also download all at once
     if st.button("⬇️ Upload ALL to GitHub"):
         if not api_key:
             st.error("❌ Please enter API Session Key first.")
@@ -200,23 +188,20 @@ if not df_filtered.empty:
                 folder_path = "data/historical/"
                 file_path = f"{folder_path}{sym}_{token}.csv"
 
-                # Get existing last date
+                # Check existing latest date
                 latest_existing_date = get_existing_latest_date(github_token, github_owner, github_repo, file_path)
-                # Fetch data
                 df_new = fetch_hist_from_api(api_key, ALLOWED_SEGMENT, token, days_back)
+
                 if not df_new.empty:
                     df_new["Date"] = pd.to_datetime(df_new["Date"], dayfirst=True)
                     max_new_date = df_new["Date"].max()
-                    # Check if update needed
-                    target_date = datetime.today() - timedelta(days=days_back)
-                    if latest_existing_date is None or latest_existing_date < target_date:
-                        if max_new_date >= target_date:
-                            csv_bytes = df_new.to_csv(index=False).encode("utf-8")
-                            upload_csv_to_github(file_path, csv_bytes, github_token, github_owner, github_repo, github_branch)
-                        else:
-                            st.info(f"Data for {sym} fetched does not cover the required date range.")
-                    else:
+
+                    if latest_existing_date is not None and latest_existing_date >= max_new_date:
                         st.info(f"Data for {sym} is already up-to-date.")
+                        continue
+                    else:
+                        csv_bytes = df_new.to_csv(index=False).encode("utf-8")
+                        upload_csv_to_github(file_path, csv_bytes, github_token, github_owner, github_repo, github_branch)
                 else:
                     st.warning(f"No data fetched for {sym}.")
 
