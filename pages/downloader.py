@@ -114,7 +114,7 @@ part_size = st.number_input("Part size", min_value=10, max_value=2000, value=300
 github_owner = st.text_input("GitHub Username / Organization", value="gopalmandloi007")
 github_repo = st.text_input("Repository Name", value="gm_tradebot_1.0")
 github_branch = st.text_input("Branch", value="main")
-github_token = st.text_input("GitHub Personal Access Token", type="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")
+github_token = st.text_input("GitHub Personal Access Token", type="password")
 
 # Optional: session client for API key
 client = st.session_state.get("client")
