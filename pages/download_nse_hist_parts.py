@@ -41,33 +41,17 @@ def download_master_df() -> pd.DataFrame:
     return df
 
 def parse_definedge_csv_text(csv_text: str) -> pd.DataFrame:
-    import pandas as pd
-    import io
-
-    df = pd.read_csv(io.StringIO(csv_text), header=0)  # assuming header present; else header=None
-    # If header=None, replace header=0 with header=None
-
-    # Rename columns if needed
-    # df = df.rename(columns={0: "DateTime", 1: "Open", ...}) # if no header
-    # Otherwise, assume headers are correct
-
-    # If 'Date' is already the date string in ddmmyyyy, parse it directly
-    def parse_date(date_str):
-        if pd.isnull(date_str):
-            return pd.NaT
-        date_str = str(date_str)
-        day = date_str[:2]
-        month = date_str[2:4]
-        year = date_str[4:8]
-        return pd.to_datetime(f"{year}-{month}-{day}")
-
-    df['Date'] = df['Date'].apply(parse_date)
-
-    # Optional: drop the original date string column if needed
-    # df.drop(columns=['DateStringColumn'], inplace=True)
-
+    df = pd.read_csv(io.StringIO(csv_text), header=None, dtype=str)
+    if df.shape[1] < 6:
+        return pd.DataFrame()
+    df = df.rename(columns={0: "DateTime", 1: "Open", 2: "High", 3: "Low", 4: "Close", 5: "Volume"})
+    df = df[["DateTime","Open","High","Low","Close","Volume"]].copy()
+    try:
+        df["Date"] = pd.to_datetime(df["DateTime"], format="%d%m%Y%H%M").dt.strftime("%d%m%Y")
+        df = df[["Date","Open","High","Low","Close","Volume"]]
+    except Exception:
+        pass
     return df
-
 def get_api_session_key_from_client(client) -> str:
     if client is None:
         return None
