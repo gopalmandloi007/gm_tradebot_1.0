@@ -52,6 +52,19 @@ def parse_definedge_csv_text(csv_text: str) -> pd.DataFrame:
         pass
     return df
 
+def get_api_session_key_from_client(client) -> str:
+    if client is None:
+        return None
+    for a in ["api_session_key","api_key","session_key","token"]:
+        if hasattr(client, a):
+            val = getattr(client, a)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    return None
+
+def chunk_df(df: pd.DataFrame, part_size: int) -> list:
+    return [df.iloc[i:i+part_size].copy() for i in range(0, len(df), part_size)]
+
 def fetch_hist_from_api(api_key: str, segment: str, token: str, days_back: int) -> pd.DataFrame:
     end_dt = datetime.today()
     start_dt = end_dt - timedelta(days=days_back)
@@ -68,7 +81,7 @@ def upload_csv_to_github(file_name, file_bytes, api_key, owner, repo, branch):
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{file_name}"
     b64_content = base64.b64encode(file_bytes).decode()
     payload = {
-        "message": f"Update {file_name}",
+        "message": f"Add {file_name}",
         "branch": branch,
         "content": b64_content
     }
@@ -124,9 +137,8 @@ api_key = get_api_session_key_from_client(client)
 if not api_key:
     api_key = st.text_input("Definedge API Session Key", type="password")
 
-# Compute target date range
+# Compute target start date based on days_back
 target_start_date = datetime.today() - timedelta(days=days_back)
-target_end_date = datetime.today()
 
 # Split data into parts
 if not df_filtered.empty:
@@ -146,113 +158,73 @@ if not df_filtered.empty:
                     folder_path = "data/historical/"
                     file_path = f"{folder_path}{sym}_{token}.csv"
 
-                    # Check existing data range
+                    # Get existing date range
                     existing_min_date, existing_max_date = get_existing_date_range(github_token, github_owner, github_repo, file_path)
 
-                    # Decide fetch logic based on existing data
-                    fetch_earlier = False
-                    fetch_later = False
-
+                    # Decide whether to fetch data
+                    fetch_data = False
                     if existing_min_date is None or existing_max_date is None:
-                        # No existing data, fetch all
-                        fetch_earlier = True
-                        fetch_later = True
+                        fetch_data = True
                     else:
-                        # Check coverage
+                        # Check if existing data covers the entire desired range
                         if existing_min_date > target_start_date:
-                            fetch_earlier = True
-                        if existing_max_date < target_end_date:
-                            fetch_later = True
-
-                    # Fetch missing earlier data
-                    if fetch_earlier:
-                        days_back_earlier = (existing_min_date - target_start_date).days if existing_min_date else (target_end_date - target_start_date).days
-                        df_earlier = fetch_hist_from_api(api_key, ALLOWED_SEGMENT, token, days_back=days_back_earlier)
-                        if not df_earlier.empty:
-                            df_earlier["Date"] = pd.to_datetime(df_earlier["Date"], dayfirst=True)
-                            # Keep only data before current min date
-                            df_earlier = df_earlier[df_earlier["Date"] < existing_min_date]
+                            fetch_data = True
                         else:
-                            df_earlier = pd.DataFrame()
+                            fetch_data = False
 
-                    # Fetch missing later data
-                    if fetch_later:
-                        days_back_later = (target_end_date - existing_max_date).days if existing_max_date else (target_end_date - target_start_date).days
-                        df_later = fetch_hist_from_api(api_key, ALLOWED_SEGMENT, token, days_back=days_back_later)
-                        if not df_later.empty:
-                            df_later["Date"] = pd.to_datetime(df_later["Date"], dayfirst=True)
-                            # Keep only data after current max date
-                            df_later = df_later[df_later["Date"] > existing_max_date]
+                    # Fetch and upload if needed
+                    if fetch_data:
+                        df_new = fetch_hist_from_api(api_key, ALLOWED_SEGMENT, token, days_back)
+                        if not df_new.empty:
+                            df_new["Date"] = pd.to_datetime(df_new["Date"], dayfirst=True)
+                            min_new_date = df_new["Date"].min()
+                            max_new_date = df_new["Date"].max()
+                            if min_new_date <= target_start_date:
+                                csv_bytes = df_new.to_csv(index=False).encode("utf-8")
+                                upload_csv_to_github(file_path, csv_bytes, github_token, github_owner, github_repo, github_branch)
+                            else:
+                                st.info(f"Fetched data for {sym} does not cover the start date {target_start_date.strftime('%d/%m/%Y')}.")
                         else:
-                            df_later = pd.DataFrame()
-
-                    # Fetch current data (full range) as fallback
-                    df_full = fetch_hist_from_api(api_key, ALLOWED_SEGMENT, token, days_back=days_back_later)
-                    if not df_full.empty:
-                        df_full["Date"] = pd.to_datetime(df_full["Date"], dayfirst=True)
-
-                    # Merge data
-                    dfs_to_concat = []
-                    if not df_earlier.empty:
-                        dfs_to_concat.append(df_earlier)
-                    if not df_full.empty:
-                        # Use full data to ensure completeness
-                        # But if earlier data exists, retain only the needed parts
-                        if fetch_earlier:
-                            # Keep only data >= target_start_date
-                            df_full = df_full[df_full["Date"] >= target_start_date]
-                        if fetch_later:
-                            # Keep only data <= target_end_date
-                            df_full = df_full[df_full["Date"] <= target_end_date]
-                        dfs_to_concat.append(df_full)
-                    if not df_later.empty:
-                        dfs_to_concat.append(df_later)
-
-                    # Combine all parts
-                    if dfs_to_concat:
-                        combined_df = pd.concat(dfs_to_concat).drop_duplicates(subset=["Date"]).sort_values("Date")
-                        # Save to CSV
-                        csv_bytes = combined_df.to_csv(index=False).encode("utf-8")
-                        upload_csv_to_github(file_path, csv_bytes, github_token, github_owner, github_repo, github_branch)
+                            st.warning(f"No data fetched for {sym}.")
                     else:
-                        st.warning(f"No new data to update for {sym}.")
-
+                        st.info(f"Existing data for {sym} already covers the range from {existing_min_date.strftime('%d/%m/%Y')} to {existing_max_date.strftime('%d/%m/%Y')}.")
                 st.success("All CSV files uploaded to GitHub for this part.")
 
-# Option to upload all at once
-if st.button("⬇️ Upload ALL to GitHub"):
-    if not api_key:
-        st.error("❌ Please enter API Session Key first.")
-    elif not github_token or not github_owner or not github_repo:
-        st.error("❌ Please fill in GitHub repo details and token.")
-    else:
-        for _, row in df_filtered.iterrows():
-            token = str(row["TOKEN"])
-            sym = str(row.get("TRADINGSYM") or row["SYMBOL"])
-            folder_path = "data/historical/"
-            file_path = f"{folder_path}{sym}_{token}.csv"
+    # Option to upload all at once
+    if st.button("⬇️ Upload ALL to GitHub"):
+        if not api_key:
+            st.error("❌ Please enter API Session Key first.")
+        elif not github_token or not github_owner or not github_repo:
+            st.error("❌ Please fill in GitHub repo details and token.")
+        else:
+            for _, row in df_filtered.iterrows():
+                token = str(row["TOKEN"])
+                sym = str(row.get("TRADINGSYM") or row["SYMBOL"])
+                folder_path = "data/historical/"
+                file_path = f"{folder_path}{sym}_{token}.csv"
 
-            existing_min_date, existing_max_date = get_existing_date_range(github_token, github_owner, github_repo, file_path)
+                # Get existing date range
+                existing_min_date, existing_max_date = get_existing_date_range(github_token, github_owner, github_repo, file_path)
 
-            # Decide fetch range
-            days_back_full = days_back
-            df_full = fetch_hist_from_api(api_key, ALLOWED_SEGMENT, token, days_back=days_back_full)
-            if not df_full.empty:
-                df_full["Date"] = pd.to_datetime(df_full["Date"], dayfirst=True)
-                if existing_min_date is None or existing_max_date is None:
-                    # No existing data: upload full
-                    csv_bytes = df_full.to_csv(index=False).encode("utf-8")
-                    upload_csv_to_github(file_path, csv_bytes, github_token, github_owner, github_repo, github_branch)
-                else:
-                    # Check if data is outdated
-                    if existing_min_date > (datetime.today() - timedelta(days=days_back)):
-                        # Data is outdated, update
-                        # Keep only relevant parts
-                        df_full = df_full[(df_full["Date"] >= target_start_date) & (df_full["Date"] <= target_end_date)]
-                        csv_bytes = df_full.to_csv(index=False).encode("utf-8")
+                # Fetch data
+                df_new = fetch_hist_from_api(api_key, ALLOWED_SEGMENT, token, days_back)
+                if not df_new.empty:
+                    df_new["Date"] = pd.to_datetime(df_new["Date"], dayfirst=True)
+                    min_new_date = df_new["Date"].min()
+                    max_new_date = df_new["Date"].max()
+                    # Check if update needed
+                    if existing_min_date is None or existing_max_date is None:
+                        # No existing data, upload
+                        csv_bytes = df_new.to_csv(index=False).encode("utf-8")
                         upload_csv_to_github(file_path, csv_bytes, github_token, github_owner, github_repo, github_branch)
                     else:
-                        st.info(f"Data for {sym} already up-to-date.")
-            else:
-                st.warning(f"No data fetched for {sym}.")
-        st.success("All CSV files uploaded to GitHub.")
+                        # Check if data is outdated
+                        if existing_min_date > target_start_date:
+                            if min_new_date <= target_start_date:
+                                csv_bytes = df_new.to_csv(index=False).encode("utf-8")
+                                upload_csv_to_github(file_path, csv_bytes, github_token, github_owner, github_repo, github_branch)
+                            else:
+                                st.info(f"Data for {sym} fetched does not cover the start date.")
+                        else:
+                            st.info(f"Data for {sym} is already up-to-date.")
+            st.success("All CSV files uploaded to GitHub.")
