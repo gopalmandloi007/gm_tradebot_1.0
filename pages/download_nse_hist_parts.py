@@ -41,16 +41,56 @@ def download_master_df() -> pd.DataFrame:
     return df
 
 def parse_definedge_csv_text(csv_text: str) -> pd.DataFrame:
+    import pandas as pd
+    import io
+
     df = pd.read_csv(io.StringIO(csv_text), header=None, dtype=str)
     if df.shape[1] < 6:
         return pd.DataFrame()
     df = df.rename(columns={0: "DateTime", 1: "Open", 2: "High", 3: "Low", 4: "Close", 5: "Volume"})
-    df = df[["DateTime","Open","High","Low","Close","Volume"]].copy()
+    df = df[["DateTime", "Open", "High", "Low", "Close", "Volume"]].copy()
+
+    def parse_date(date_str):
+        # Convert to int to remove leading zeros if any
+        date_int = int(date_str)
+        date_str_padded = str(date_int)
+
+        length = len(date_str_padded)
+
+        # Based on your examples, assume:
+        # - Day: 1 or 2 digits
+        # - Month: 2 digits
+        # - Year: 4 digits
+        # For example:
+        # '3092025' -> day=3, month=09, year=2025
+        # '4092025' -> day=4, month=09, year=2025
+        # If there's time info, adjust accordingly.
+
+        # Extract day:
+        if length == 7:
+            # e.g., '3092025'
+            day = int(date_str_padded[0])
+            month = int(date_str_padded[1:3])
+            year = int(date_str_padded[3:])
+        elif length == 8:
+            # e.g., '13092025' (if such case exists)
+            day = int(date_str_padded[0:2])
+            month = int(date_str_padded[2:4])
+            year = int(date_str_padded[4:])
+        else:
+            # fallback or handle other lengths
+            # assuming default parsing:
+            day = int(date_str_padded[0:2])
+            month = int(date_str_padded[2:4])
+            year = int(date_str_padded[4:])
+        return pd.to_datetime(f"{year:04d}-{month:02d}-{day:02d}")
+
     try:
-        df["Date"] = pd.to_datetime(df["DateTime"], format="%d%m%Y%H%M").dt.strftime("%d%m%Y")
-        df = df[["Date","Open","High","Low","Close","Volume"]]
+        df["Date"] = df["DateTime"].apply(parse_date).dt.strftime("%d%m%Y")
+        df = df[["Date", "Open", "High", "Low", "Close", "Volume"]]
     except Exception:
         pass
+
     return df
 
 def get_api_session_key_from_client(client) -> str:
