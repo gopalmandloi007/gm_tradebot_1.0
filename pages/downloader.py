@@ -3,8 +3,9 @@ import pandas as pd
 import io
 import zipfile
 import requests
-import base64
+import time
 from datetime import datetime, timedelta
+import base64
 
 st.set_page_config(layout="wide")
 st.title("📥 Historical OHLCV Download — NSE Stocks & Indices (Daily, Part-wise)")
@@ -77,6 +78,7 @@ def fetch_hist_from_api(api_key: str, segment: str, token: str, days_back: int) 
         return parse_definedge_csv_text(resp.text)
     return pd.DataFrame()
 
+# Function to upload CSV to GitHub
 def upload_csv_to_github(file_name, file_bytes, api_key, owner, repo, branch):
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{file_name}"
     b64_content = base64.b64encode(file_bytes).decode()
@@ -95,22 +97,6 @@ def upload_csv_to_github(file_name, file_bytes, api_key, owner, repo, branch):
     else:
         st.error(f"Failed to upload {file_name}: {response.status_code}\n{response.text}")
 
-def get_existing_date_range(github_token, owner, repo, file_path):
-    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{file_path}"
-    headers = {
-        "Authorization": f"token {github_token}"
-    }
-    response = requests.get(url, headers=headers)
-    if response.status_code == 200:
-        content = response.json().get("content", "")
-        decoded = base64.b64decode(content).decode()
-        df = pd.read_csv(io.StringIO(decoded))
-        if not df.empty and "Date" in df.columns:
-            min_date = pd.to_datetime(df["Date"], dayfirst=True).min()
-            max_date = pd.to_datetime(df["Date"], dayfirst=True).max()
-            return min_date, max_date
-    return None, None
-
 # ----------------------
 # Main UI
 # ----------------------
@@ -121,26 +107,22 @@ df_seg = master_df[master_df["SEGMENT"].astype(str).str.upper() == ALLOWED_SEGME
 df_filtered = df_seg[df_seg["INSTRUMENT"].astype(str).str.upper().isin(ALLOWED_INSTRUMENTS)].copy()
 st.write(f"Filtered rows: {len(df_filtered)}")
 
-# User inputs
 days_back = st.number_input("Days back", min_value=10, max_value=3650, value=365)
 part_size = st.number_input("Part size", min_value=10, max_value=2000, value=300, step=50)
 
-# GitHub details
+# Get GitHub details from user
 github_owner = st.text_input("GitHub Username / Organization", value="gopalmandloi007")
 github_repo = st.text_input("Repository Name", value="gm_tradebot_1.0")
 github_branch = st.text_input("Branch", value="main")
 github_token = st.text_input("GitHub Personal Access Token", type="password")
 
-# API session key
+# Optional: session client for API key
 client = st.session_state.get("client")
 api_key = get_api_session_key_from_client(client)
 if not api_key:
     api_key = st.text_input("Definedge API Session Key", type="password")
 
-# Compute target start date based on days_back
-target_start_date = datetime.today() - timedelta(days=days_back)
-
-# Split data into parts
+# Split into parts
 if not df_filtered.empty:
     parts = chunk_df(df_filtered.reset_index(drop=True), int(part_size))
     st.subheader(f"Parts: {len(parts)} (≈ {part_size} symbols each)")
@@ -152,45 +134,21 @@ if not df_filtered.empty:
             elif not github_token or not github_owner or not github_repo:
                 st.error("❌ Please fill in GitHub repo details and token.")
             else:
+                # For each symbol in this part, fetch data and upload
                 for _, row in part_df.iterrows():
                     token = str(row["TOKEN"])
                     sym = str(row.get("TRADINGSYM") or row["SYMBOL"])
+                    df = fetch_hist_from_api(api_key, ALLOWED_SEGMENT, token, days_back)
+                    if df.empty:
+                        csv_bytes = "NO DATA\n".encode("utf-8")
+                    else:
+                        csv_bytes = df.to_csv(index=False).encode("utf-8")
                     folder_path = "data/historical/"
-                    file_path = f"{folder_path}{sym}_{token}.csv"
-
-                    # Get existing date range
-                    existing_min_date, existing_max_date = get_existing_date_range(github_token, github_owner, github_repo, file_path)
-
-                    # Decide whether to fetch data
-                    fetch_data = False
-                    if existing_min_date is None or existing_max_date is None:
-                        fetch_data = True
-                    else:
-                        # Check if existing data covers the entire desired range
-                        if existing_min_date > target_start_date:
-                            fetch_data = True
-                        else:
-                            fetch_data = False
-
-                    # Fetch and upload if needed
-                    if fetch_data:
-                        df_new = fetch_hist_from_api(api_key, ALLOWED_SEGMENT, token, days_back)
-                        if not df_new.empty:
-                            df_new["Date"] = pd.to_datetime(df_new["Date"], dayfirst=True)
-                            min_new_date = df_new["Date"].min()
-                            max_new_date = df_new["Date"].max()
-                            if min_new_date <= target_start_date:
-                                csv_bytes = df_new.to_csv(index=False).encode("utf-8")
-                                upload_csv_to_github(file_path, csv_bytes, github_token, github_owner, github_repo, github_branch)
-                            else:
-                                st.info(f"Fetched data for {sym} does not cover the start date {target_start_date.strftime('%d/%m/%Y')}.")
-                        else:
-                            st.warning(f"No data fetched for {sym}.")
-                    else:
-                        st.info(f"Existing data for {sym} already covers the range from {existing_min_date.strftime('%d/%m/%Y')} to {existing_max_date.strftime('%d/%m/%Y')}.")
+                    filename = f"{folder_path}{sym}_{token}.csv"
+                    upload_csv_to_github(filename, csv_bytes, github_token, github_owner, github_repo, github_branch)
                 st.success("All CSV files uploaded to GitHub for this part.")
 
-    # Option to upload all at once
+    # Also download all at once
     if st.button("⬇️ Upload ALL to GitHub"):
         if not api_key:
             st.error("❌ Please enter API Session Key first.")
@@ -200,31 +158,12 @@ if not df_filtered.empty:
             for _, row in df_filtered.iterrows():
                 token = str(row["TOKEN"])
                 sym = str(row.get("TRADINGSYM") or row["SYMBOL"])
+                df = fetch_hist_from_api(api_key, ALLOWED_SEGMENT, token, days_back)
+                if df.empty:
+                    csv_bytes = "NO DATA\n".encode("utf-8")
+                else:
+                    csv_bytes = df.to_csv(index=False).encode("utf-8")
                 folder_path = "data/historical/"
-                file_path = f"{folder_path}{sym}_{token}.csv"
-
-                # Get existing date range
-                existing_min_date, existing_max_date = get_existing_date_range(github_token, github_owner, github_repo, file_path)
-
-                # Fetch data
-                df_new = fetch_hist_from_api(api_key, ALLOWED_SEGMENT, token, days_back)
-                if not df_new.empty:
-                    df_new["Date"] = pd.to_datetime(df_new["Date"], dayfirst=True)
-                    min_new_date = df_new["Date"].min()
-                    max_new_date = df_new["Date"].max()
-                    # Check if update needed
-                    if existing_min_date is None or existing_max_date is None:
-                        # No existing data, upload
-                        csv_bytes = df_new.to_csv(index=False).encode("utf-8")
-                        upload_csv_to_github(file_path, csv_bytes, github_token, github_owner, github_repo, github_branch)
-                    else:
-                        # Check if data is outdated
-                        if existing_min_date > target_start_date:
-                            if min_new_date <= target_start_date:
-                                csv_bytes = df_new.to_csv(index=False).encode("utf-8")
-                                upload_csv_to_github(file_path, csv_bytes, github_token, github_owner, github_repo, github_branch)
-                            else:
-                                st.info(f"Data for {sym} fetched does not cover the start date.")
-                        else:
-                            st.info(f"Data for {sym} is already up-to-date.")
+                filename = f"{folder_path}{sym}_{token}.csv"
+                upload_csv_to_github(filename, csv_bytes, github_token, github_owner, github_repo, github_branch)
             st.success("All CSV files uploaded to GitHub.")
