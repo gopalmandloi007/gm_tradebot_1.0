@@ -111,10 +111,10 @@ days_back = st.number_input("Days back", min_value=10, max_value=3650, value=365
 part_size = st.number_input("Part size", min_value=10, max_value=2000, value=300, step=50)
 
 # Get GitHub details from user
-github_owner = st.text_input("gopalmandloi007", value="your_username")
-github_repo = st.text_input("gm_tradebot_1.0", value="your_repo")
+github_owner = st.text_input("GitHub Username / Organization", value="gopalmandloi007")
+github_repo = st.text_input("Repository Name", value="gm_tradebot_1.0")
 github_branch = st.text_input("Branch", value="main")
-github_token = st.text_input("GitHub Personal Access Token", type="password")
+github_token = st.text_input("GitHub Personal Access Token", type="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")
 
 # Optional: session client for API key
 client = st.session_state.get("client")
