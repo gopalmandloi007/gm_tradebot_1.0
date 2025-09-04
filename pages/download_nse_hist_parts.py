@@ -1,15 +1,14 @@
-# pages/download_nse_hist_parts.py
+# pages/download_nse_hist_parts_debug.py
 import streamlit as st
 import pandas as pd
 import numpy as np
 import io
 import zipfile
 import requests
-import os
 import time
 import traceback
 from datetime import datetime, timedelta
-from typing import List, Tuple
+from typing import List
 
 st.set_page_config(layout="wide")
 st.title("📥 Historical OHLCV Download — NSE Stocks & Indices (Daily, Part-wise, Debug)")
@@ -25,12 +24,6 @@ MASTER_FILE_COLS = [
 ]
 ALLOWED_SEGMENT = "NSE"
 ALLOWED_INSTRUMENTS = {"EQ", "BE", "SM", "IDX"}
-
-# ensure session caches exist
-if "_hist_cache" not in st.session_state:
-    st.session_state["_hist_cache"] = {}   # key -> bytes (csv)
-if "_zip_cache" not in st.session_state:
-    st.session_state["_zip_cache"] = {}    # key -> bytes (zip)
 
 # ----------------------
 # Helpers
@@ -50,15 +43,12 @@ def download_master_df() -> pd.DataFrame:
     return df
 
 def parse_definedge_csv_text(csv_text: str) -> pd.DataFrame:
-    if not csv_text or not csv_text.strip():
-        return pd.DataFrame()
     try:
         df = pd.read_csv(io.StringIO(csv_text), header=None, dtype=str)
         if df.shape[1] >= 6:
             colmap = {0: "DateTime", 1: "Open", 2: "High", 3: "Low", 4: "Close", 5: "Volume"}
             df = df.rename(columns=colmap)
-            keep_cols = [c for c in ["DateTime","Open","High","Low","Close","Volume"] if c in df.columns]
-            df = df[keep_cols]
+            df = df[["DateTime","Open","High","Low","Close","Volume"]]
             return df
     except Exception:
         pass
@@ -74,51 +64,88 @@ def get_api_session_key_from_client(client) -> str:
                 return val.strip()
     return None
 
+def chunk_df(df: pd.DataFrame, part_size: int) -> List[pd.DataFrame]:
+    return [df.iloc[i:i+part_size].copy() for i in range(0, len(df), part_size)]
+
+def fetch_hist_from_api(api_key: str, segment: str, token: str, days_back: int) -> pd.DataFrame:
+    end_dt = datetime.today()
+    start_dt = end_dt - timedelta(days=days_back)
+    from_str = start_dt.strftime("%d%m%Y") + "0000"
+    to_str = end_dt.strftime("%d%m%Y") + "1530"
+    url = f"https://data.definedgesecurities.com/sds/history/{segment}/{token}/day/{from_str}/{to_str}"
+    headers = {"Authorization": api_key}
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=25)
+        debug_text = f"URL: {url}\nStatus: {resp.status_code}, Length: {len(resp.text)}"
+        st.text(debug_text)
+        st.text(resp.text[:200])  # show first 200 chars for debug
+        if resp.status_code == 200 and resp.text.strip():
+            df = parse_definedge_csv_text(resp.text)
+            return df
+    except Exception as e:
+        st.error(f"Error fetching token {token}: {e}")
+    return pd.DataFrame()
+
+def build_zip(rows: pd.DataFrame, days_back: int, api_key: str, part_name: str) -> io.BytesIO:
+    zip_buffer = io.BytesIO()
+    total = len(rows)
+    progress = st.progress(0.0, text="Fetching data...")
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, (_, row) in enumerate(rows.iterrows(), start=1):
+            token = str(row["TOKEN"])
+            sym = str(row.get("TRADINGSYM") or row.get("SYMBOL"))
+            df = fetch_hist_from_api(api_key, ALLOWED_SEGMENT, token, days_back)
+            if df.empty:
+                csv_bytes = "NO DATA\n".encode("utf-8")
+            else:
+                csv_bytes = df.to_csv(index=False).encode("utf-8")
+            zf.writestr(f"{sym}_{token}.csv", csv_bytes)
+            progress.progress(i/total, text=f"[{i}/{total}] {sym}")
+            time.sleep(0.1)  # polite delay
+    zip_buffer.seek(0)
+    st.success(f"ZIP for {part_name} ready")
+    return zip_buffer
+
 # ----------------------
-# Load & filter master
+# Main UI
 # ----------------------
 with st.spinner("Downloading master…"):
     master_df = download_master_df()
 
 df_seg = master_df[master_df["SEGMENT"].astype(str).str.upper() == ALLOWED_SEGMENT]
 df_filtered = df_seg[df_seg["INSTRUMENT"].astype(str).str.upper().isin(ALLOWED_INSTRUMENTS)].copy()
-
 st.write(f"Filtered rows: {len(df_filtered)}")
 
-# ----------------------
-# Controls
-# ----------------------
-days_back = st.number_input("Number of days back", min_value=30, max_value=3650, value=365)
+days_back = st.number_input("Days back", min_value=30, max_value=3650, value=365)
+part_size = st.number_input("Part size", min_value=50, max_value=2000, value=300, step=50)
+
 client = st.session_state.get("client")
 api_key = get_api_session_key_from_client(client)
 if not api_key:
     api_key = st.text_input("Definedge API Session Key", type="password")
 
-# ----------------------
-# 🔎 Debug test call
-# ----------------------
 if api_key and not df_filtered.empty:
-    test_row = df_filtered.iloc[0]
-    token = str(test_row["TOKEN"])
-    end_dt = datetime.today()
-    start_dt = end_dt - timedelta(days=int(days_back))
-    from_str = start_dt.strftime("%d%m%Y") + "0000"
-    to_str = end_dt.strftime("%d%m%Y") + "1530"
-    url = f"https://data.definedgesecurities.com/sds/history/NSE/{token}/day/{from_str}/{to_str}"
-    headers = {"Authorization": api_key}
+    parts = chunk_df(df_filtered.reset_index(drop=True), int(part_size))
+    st.subheader(f"Parts: {len(parts)} (≈ {part_size} symbols each)")
 
-    st.subheader("🔎 Test API Call")
-    st.code(f"URL: {url}\nHeaders: {headers}")
-    try:
-        resp = requests.get(url, headers=headers, timeout=25)
-        st.write("Status:", resp.status_code)
-        st.write("Response length:", len(resp.text))
-        st.text(resp.text[:500])  # show first 500 chars
-        df_test = parse_definedge_csv_text(resp.text)
-        if not df_test.empty:
-            st.success(f"Parsed {len(df_test)} rows")
-            st.dataframe(df_test.head(10))
-        else:
-            st.error("Parsed DataFrame is empty ❌")
-    except Exception as e:
-        st.error(f"Error calling API: {e}")
+    # buttons for each part
+    for idx, part_df in enumerate(parts):
+        if st.button(f"Download Part {idx+1} ({len(part_df)} symbols)"):
+            buf = build_zip(part_df, int(days_back), api_key, f"Part {idx+1}")
+            st.download_button(
+                label=f"⬇️ Save Part {idx+1}",
+                data=buf.getvalue(),
+                file_name=f"nse_part_{idx+1:02d}.zip",
+                mime="application/zip"
+            )
+
+    # Download ALL
+    if st.button("⬇️ Download ALL"):
+        buf = build_zip(df_filtered, int(days_back), api_key, "ALL")
+        st.download_button(
+            label="⬇️ Save ALL",
+            data=buf.getvalue(),
+            file_name="nse_all.zip",
+            mime="application/zip"
+        )
