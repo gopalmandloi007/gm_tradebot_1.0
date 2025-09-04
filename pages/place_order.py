@@ -11,13 +11,6 @@ Features:
 - Preview -> Confirm flow (prevents accidental orders)
 - Helpful validations and estimated order value vs available cash
 - Debug toggle to inspect payload/response
-
-Expected client methods:
-- client.get_quotes(exchange, token) -> returns dict with 'ltp'
-- client.api_get('/limits') -> returns dict with 'cash'
-- client.place_order(payload) -> places order, returns status dict
-
-Drop into pages/ and adjust method names if your client wrapper differs.
 """
 
 import streamlit as st
@@ -39,17 +32,14 @@ MASTER_URL = "https://app.definedgesecurities.com/public/allmaster.zip"
 MASTER_FILE = "data/master/allmaster.csv"
 
 # ---- helpers ----
-
 def download_and_extract_master() -> pd.DataFrame:
     try:
         r = requests.get(MASTER_URL, timeout=20)
         r.raise_for_status()
         with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-            # pick first csv inside zip
             csv_name = [n for n in z.namelist() if n.lower().endswith('.csv')][0]
             with z.open(csv_name) as f:
                 df = pd.read_csv(f, header=None)
-        # set friendly column names (based on your master format)
         df.columns = [
             "SEGMENT","TOKEN","SYMBOL","TRADINGSYM","INSTRUMENT","EXPIRY",
             "TICKSIZE","LOTSIZE","OPTIONTYPE","STRIKE","PRICEPREC","MULTIPLIER",
@@ -62,7 +52,6 @@ def download_and_extract_master() -> pd.DataFrame:
         st.error(f"Failed to download master file: {e}")
         return pd.DataFrame()
 
-
 def load_master_symbols() -> pd.DataFrame:
     if os.path.exists(MASTER_FILE):
         try:
@@ -72,26 +61,21 @@ def load_master_symbols() -> pd.DataFrame:
     else:
         return download_and_extract_master()
 
-
 def fetch_ltp(client, exchange: str, token: Optional[str]) -> float:
     if not client or token is None:
         return 0.0
     try:
         quotes = client.get_quotes(exchange, str(token))
-        # some wrappers return nested structure; handle common cases
         if isinstance(quotes, dict) and 'ltp' in quotes:
             return float(quotes.get('ltp') or 0.0)
-        # fallback: sometimes quotes['data']['ltp'] etc.
         if isinstance(quotes, dict) and 'data' in quotes and isinstance(quotes['data'], dict):
             return float(quotes['data'].get('ltp') or 0.0)
     except Exception:
         return 0.0
     return 0.0
 
-
 def _safe_str(x):
     return "" if x is None else str(x)
-
 
 # ---- page start ----
 client = st.session_state.get('client')
@@ -105,8 +89,10 @@ debug = st.checkbox("Show debug info", value=False)
 master_df = load_master_symbols()
 col_refresh, col_manual = st.columns([1, 1])
 with col_refresh:
-    if st.button("🔄 Refresh Master (redownload)"):
+    if st.button("🔄 Refresh Master (redownload)") and st.session_state.get("_refreshing") != True:
+        st.session_state["_refreshing"] = True
         master_df = download_and_extract_master()
+        st.session_state["_refreshing"] = False
         st.rerun()
 with col_manual:
     manual_mode = st.checkbox("Manual symbol input (no master)")
@@ -114,9 +100,8 @@ with col_manual:
 # Exchange selector
 exchange = st.radio("Exchange", ["NSE", "BSE", "NFO", "MCX"], index=0, horizontal=True)
 
-# Symbol selector (searchable)
+# Symbol selector
 if not manual_mode and not master_df.empty:
-    # filter master by segment/exchange
     try:
         df_exch = master_df[master_df['SEGMENT'] == exchange]
     except Exception:
@@ -124,7 +109,8 @@ if not manual_mode and not master_df.empty:
 
     search = st.text_input("Search symbol (type part of name / tradingsym)")
     if search:
-        mask = df_exch['TRADINGSYM'].astype(str).str.contains(search, case=False, na=False) | df_exch['COMPANY'].astype(str).str.contains(search, case=False, na=False)
+        mask = df_exch['TRADINGSYM'].astype(str).str.contains(search, case=False, na=False) | \
+               df_exch['COMPANY'].astype(str).str.contains(search, case=False, na=False)
         choices = df_exch[mask]
     else:
         choices = df_exch
@@ -135,12 +121,10 @@ if not manual_mode and not master_df.empty:
         lot_size = 1
         token = None
     else:
-        # show symbol selectbox with a friendly label
         display = choices['TRADINGSYM'].astype(str).tolist()
         idx = st.selectbox("Trading Symbol", display, index=0)
         selected_symbol = str(idx)
         token_row = choices[choices['TRADINGSYM'] == selected_symbol].iloc[0]
-        # try to read lotsize/token safely
         try:
             lot_size = int(token_row.get('LOTSIZE', 1)) if not pd.isna(token_row.get('LOTSIZE', 1)) else 1
         except Exception:
@@ -150,7 +134,6 @@ if not manual_mode and not master_df.empty:
         except Exception:
             token = None
 else:
-    # Manual mode
     selected_symbol = st.text_input("Trading Symbol (manual)").strip().upper()
     lot_size = int(st.number_input("Lot size (if known)", min_value=1, step=1, value=1))
     token = None
@@ -163,7 +146,7 @@ except Exception:
     limits = {}
 cash_available = float(limits.get('cash') or 0.0)
 
-# LTP fetch and display
+# LTP fetch
 current_ltp = fetch_ltp(client, exchange, token) if token else 0.0
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -179,7 +162,6 @@ with st.form("place_order_form"):
     st.subheader("Order Details")
     order_type = st.radio("Buy / Sell", ["BUY", "SELL"], index=0, horizontal=True)
     price_type = st.radio("Price Type", ["LIMIT", "MARKET", "SL-LIMIT", "SL-MARKET"], index=0, horizontal=True)
-
     place_by = st.radio("Place by", ["Quantity", "Amount"], index=0, horizontal=True)
 
     col_qty, col_amt = st.columns(2)
@@ -188,33 +170,48 @@ with st.form("place_order_form"):
     with col_amt:
         amount = float(st.number_input("Amount (₹)", min_value=0.0, step=0.05, value=0.0))
 
-    # For SL orders show trigger price
+    # Trigger price persistence
     trigger_price = 0.0
     if price_type in ["SL-LIMIT", "SL-MARKET"]:
-        trigger_price = float(st.number_input("Trigger Price (for SL orders)", min_value=0.0, step=0.05, value=0.0))
+        if "trigger_price" not in st.session_state:
+            st.session_state["trigger_price"] = 0.0
+        trigger_price = st.number_input(
+            "Trigger Price (for SL orders)",
+            min_value=0.0,
+            step=0.05,
+            value=st.session_state["trigger_price"],
+            key="trigger_price"
+        )
 
-    # Price input: for MARKET we will use LTP at submit
+    # Price input persistence
     price_input = 0.0
     if price_type == "MARKET":
         st.info("Market order: live market price will be used at placement. Price input is ignored.")
     else:
-        price_input = float(st.number_input("Price (per unit)", min_value=0.0, step=0.05, value=max(current_ltp, 0.0)))
+        if "desired_price" not in st.session_state:
+            st.session_state["desired_price"] = float(max(current_ltp, 0.0))
+        price_input = st.number_input(
+            "Price (per unit)",
+            min_value=0.0,
+            step=0.05,
+            value=st.session_state["desired_price"],
+            key="desired_price"
+        )
 
     product_type = st.selectbox("Product Type", ["NORMAL", "INTRADAY", "CNC"], index=2)
     validity = st.selectbox("Validity", ["DAY", "IOC", "EOS"], index=0)
     remarks = st.text_input("Remarks (optional)")
     amo_flag = st.checkbox("AMO order (after market order)", value=False)
-
     submit = st.form_submit_button("Preview Order")
 
-# Auto-calc quantity when placed by amount
+# Auto-calc quantity
 effective_price = price_input if price_type != "MARKET" else (current_ltp or price_input)
 if place_by == "Amount" and amount > 0 and effective_price > 0:
     computed_qty = int(amount // effective_price)
 else:
     computed_qty = quantity
 
-# Enforce lot-size multiple
+# Lot-size enforcement
 if computed_qty > 0:
     if computed_qty % lot_size != 0:
         adjusted_qty = max(lot_size, (computed_qty // lot_size) * lot_size)
@@ -228,8 +225,6 @@ else:
 
 # Estimated cost
 est_value = computed_qty * effective_price
-
-# Show quick estimate
 st.markdown("---")
 st.subheader("Order Estimate")
 st.write(f"Order Type: **{order_type}**  |  Price Type: **{price_type}**")
@@ -242,24 +237,18 @@ if cash_available > 0 and est_value > cash_available:
 
 # Preview -> Confirm flow
 if submit:
-    # Basic validation
     if not selected_symbol:
         st.error("Please select or enter a trading symbol.")
-    elif price_type in ["SL-LIMIT", "SL-MARKET"] and trigger_price <= 0:
+    elif price_type in ["SL-LIMIT", "SL-MARKET"] and st.session_state.get("trigger_price", 0) <= 0:
         st.error("Please provide a Trigger Price for SL orders.")
-    elif price_type != "MARKET" and effective_price <= 0:
+    elif price_type != "MARKET" and st.session_state.get("desired_price", 0) <= 0:
         st.error("Please provide a valid price.")
     else:
-        # Decide which price to send
-        # If user has specified a desired price, use it; otherwise, fall back to effective_price (LTP)
-        order_price = desired_order_price if 'desired_order_price' in locals() and desired_order_price else effective_price
-
-        # Build payload with the chosen price
+        order_price = st.session_state.get("desired_price", effective_price)
         payload = {
             "exchange": _safe_str(exchange),
             "tradingsymbol": _safe_str(selected_symbol),
             "order_type": _safe_str(order_type),
-            # Use the user-specified price if available
             "price": _safe_str(round(float(order_price), 2)),
             "price_type": _safe_str(price_type),
             "product_type": _safe_str(product_type),
@@ -267,12 +256,12 @@ if submit:
             "validity": _safe_str(validity),
             "amo": "YES" if amo_flag else "",
         }
-        if trigger_price and trigger_price > 0:
-            payload["trigger_price"] = _safe_str(round(float(trigger_price), 2))
+        trig = st.session_state.get("trigger_price", 0)
+        if trig and trig > 0:
+            payload["trigger_price"] = _safe_str(round(float(trig), 2))
         if remarks:
             payload["remarks"] = _safe_str(remarks)
 
-        # Save for confirmation
         st.session_state['_pending_place_order'] = payload
         st.success("✅ Preview ready — confirm below to place order.")
 
