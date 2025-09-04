@@ -149,7 +149,7 @@ if not api_key:
         api_key = api_key_input
 
 # Set full date range (last 5 years)
-start_date_full = datetime.today() - timedelta(days=365*5)
+start_date_full = datetime.today() - timedelta(days=365*10)
 end_date_full = datetime.today()
 
 # Split into parts if needed
