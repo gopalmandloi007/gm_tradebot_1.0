@@ -143,7 +143,8 @@ if not df_filtered.empty:
                         csv_bytes = "NO DATA\n".encode("utf-8")
                     else:
                         csv_bytes = df.to_csv(index=False).encode("utf-8")
-                    filename = f"{sym}_{token}.csv"
+                    folder_path = "data/historical/"
+                    filename = f"{folder_path}{sym}_{token}.csv"
                     upload_csv_to_github(filename, csv_bytes, github_token, github_owner, github_repo, github_branch)
                 st.success("All CSV files uploaded to GitHub for this part.")
 
@@ -162,6 +163,7 @@ if not df_filtered.empty:
                     csv_bytes = "NO DATA\n".encode("utf-8")
                 else:
                     csv_bytes = df.to_csv(index=False).encode("utf-8")
-                filename = f"{sym}_{token}.csv"
+                folder_path = "data/historical/"
+                filename = f"{folder_path}{sym}_{token}.csv"
                 upload_csv_to_github(filename, csv_bytes, github_token, github_owner, github_repo, github_branch)
             st.success("All CSV files uploaded to GitHub.")
