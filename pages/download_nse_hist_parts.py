@@ -1,17 +1,15 @@
-# pages/download_nse_hist_parts_debug.py
+# pages/download_nse_hist_parts.py
 import streamlit as st
 import pandas as pd
-import numpy as np
 import io
 import zipfile
 import requests
 import time
-import traceback
 from datetime import datetime, timedelta
 from typing import List
 
 st.set_page_config(layout="wide")
-st.title("📥 Historical OHLCV Download — NSE Stocks & Indices (Daily, Part-wise, Debug)")
+st.title("📥 Historical OHLCV Download — NSE Stocks & Indices (Daily, Part-wise)")
 
 # ----------------------
 # Configuration
@@ -43,16 +41,19 @@ def download_master_df() -> pd.DataFrame:
     return df
 
 def parse_definedge_csv_text(csv_text: str) -> pd.DataFrame:
+    df = pd.read_csv(io.StringIO(csv_text), header=None, dtype=str)
+    if df.shape[1] < 6:
+        return pd.DataFrame()
+    df = df.rename(columns={0: "DateTime", 1: "Open", 2: "High", 3: "Low", 4: "Close", 5: "Volume"})
+    df = df[["DateTime","Open","High","Low","Close","Volume"]].copy()
+
+    # Convert date to DDMMYYYY
     try:
-        df = pd.read_csv(io.StringIO(csv_text), header=None, dtype=str)
-        if df.shape[1] >= 6:
-            colmap = {0: "DateTime", 1: "Open", 2: "High", 3: "Low", 4: "Close", 5: "Volume"}
-            df = df.rename(columns=colmap)
-            df = df[["DateTime","Open","High","Low","Close","Volume"]]
-            return df
+        df["Date"] = pd.to_datetime(df["DateTime"], format="%d%m%Y%H%M").dt.strftime("%d%m%Y")
+        df = df[["Date","Open","High","Low","Close","Volume"]]
     except Exception:
         pass
-    return pd.DataFrame()
+    return df
 
 def get_api_session_key_from_client(client) -> str:
     if client is None:
@@ -75,16 +76,9 @@ def fetch_hist_from_api(api_key: str, segment: str, token: str, days_back: int) 
     url = f"https://data.definedgesecurities.com/sds/history/{segment}/{token}/day/{from_str}/{to_str}"
     headers = {"Authorization": api_key}
 
-    try:
-        resp = requests.get(url, headers=headers, timeout=25)
-        debug_text = f"URL: {url}\nStatus: {resp.status_code}, Length: {len(resp.text)}"
-        st.text(debug_text)
-        st.text(resp.text[:200])  # show first 200 chars for debug
-        if resp.status_code == 200 and resp.text.strip():
-            df = parse_definedge_csv_text(resp.text)
-            return df
-    except Exception as e:
-        st.error(f"Error fetching token {token}: {e}")
+    resp = requests.get(url, headers=headers, timeout=25)
+    if resp.status_code == 200 and resp.text.strip():
+        return parse_definedge_csv_text(resp.text)
     return pd.DataFrame()
 
 def build_zip(rows: pd.DataFrame, days_back: int, api_key: str, part_name: str) -> io.BytesIO:
@@ -102,7 +96,7 @@ def build_zip(rows: pd.DataFrame, days_back: int, api_key: str, part_name: str) 
                 csv_bytes = df.to_csv(index=False).encode("utf-8")
             zf.writestr(f"{sym}_{token}.csv", csv_bytes)
             progress.progress(i/total, text=f"[{i}/{total}] {sym}")
-            time.sleep(0.1)  # polite delay
+            time.sleep(0.05)  # polite delay
     zip_buffer.seek(0)
     st.success(f"ZIP for {part_name} ready")
     return zip_buffer
