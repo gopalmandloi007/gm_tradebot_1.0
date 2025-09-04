@@ -97,6 +97,20 @@ def upload_csv_to_github(file_name, file_bytes, api_key, owner, repo, branch):
     else:
         st.error(f"Failed to upload {file_name}: {response.status_code}\n{response.text}")
 
+def get_existing_latest_date(github_token, owner, repo, file_path):
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{file_path}"
+    headers = {
+        "Authorization": f"token {github_token}"
+    }
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        content = response.json().get("content", "")
+        decoded = base64.b64decode(content).decode()
+        df = pd.read_csv(io.StringIO(decoded))
+        if not df.empty and "Date" in df.columns:
+            return pd.to_datetime(df["Date"]).max()
+    # If file doesn't exist or no data, return None
+    return None
 # ----------------------
 # Main UI
 # ----------------------
@@ -167,3 +181,28 @@ if not df_filtered.empty:
                 filename = f"{folder_path}{sym}_{token}.csv"
                 upload_csv_to_github(filename, csv_bytes, github_token, github_owner, github_repo, github_branch)
             st.success("All CSV files uploaded to GitHub.")
+
+# Before fetching new data
+file_path = f"{folder_path}{sym}_{token}.csv"
+latest_existing_date = get_existing_latest_date(github_token, github_owner, github_repo, file_path)
+
+# Fetch new data
+df_new = fetch_hist_from_api(api_key, ALLOWED_SEGMENT, token, days_back)
+
+if not df_new.empty:
+    # Convert "Date" to datetime
+    df_new["Date"] = pd.to_datetime(df_new["Date"], dayfirst=True)
+
+    max_new_date = df_new["Date"].max()
+
+    # Check if latest data is already present
+    if latest_existing_date is not None and latest_existing_date >= max_new_date:
+        st.info(f"Data for {sym} is already up-to-date.")
+        continue  # Skip to next symbol
+    else:
+        # Proceed to upload
+        csv_bytes = df_new.to_csv(index=False).encode("utf-8")
+        upload_csv_to_github(file_path, csv_bytes, github_token, github_owner, github_repo, github_branch)
+else:
+    # No new data fetched, handle accordingly
+    st.warning(f"No data fetched for {sym}.")
