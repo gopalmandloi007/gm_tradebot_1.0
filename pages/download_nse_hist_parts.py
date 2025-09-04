@@ -12,7 +12,7 @@ st.set_page_config(layout="wide")
 st.title("📥 Historical OHLCV Download — NSE Stocks & Indices (Daily, Part-wise)")
 
 # ----------------------
-# Configuration
+# Config
 # ----------------------
 MASTER_URL = "https://app.definedgesecurities.com/public/allmaster.zip"
 MASTER_FILE_COLS = [
@@ -46,8 +46,6 @@ def parse_definedge_csv_text(csv_text: str) -> pd.DataFrame:
         return pd.DataFrame()
     df = df.rename(columns={0: "DateTime", 1: "Open", 2: "High", 3: "Low", 4: "Close", 5: "Volume"})
     df = df[["DateTime","Open","High","Low","Close","Volume"]].copy()
-
-    # Convert date to DDMMYYYY
     try:
         df["Date"] = pd.to_datetime(df["DateTime"], format="%d%m%Y%H%M").dt.strftime("%d%m%Y")
         df = df[["Date","Open","High","Low","Close","Volume"]]
@@ -75,7 +73,6 @@ def fetch_hist_from_api(api_key: str, segment: str, token: str, days_back: int) 
     to_str = end_dt.strftime("%d%m%Y") + "1530"
     url = f"https://data.definedgesecurities.com/sds/history/{segment}/{token}/day/{from_str}/{to_str}"
     headers = {"Authorization": api_key}
-
     resp = requests.get(url, headers=headers, timeout=25)
     if resp.status_code == 200 and resp.text.strip():
         return parse_definedge_csv_text(resp.text)
@@ -96,7 +93,7 @@ def build_zip(rows: pd.DataFrame, days_back: int, api_key: str, part_name: str) 
                 csv_bytes = df.to_csv(index=False).encode("utf-8")
             zf.writestr(f"{sym}_{token}.csv", csv_bytes)
             progress.progress(i/total, text=f"[{i}/{total}] {sym}")
-            time.sleep(0.05)  # polite delay
+            time.sleep(0.05)
     zip_buffer.seek(0)
     st.success(f"ZIP for {part_name} ready")
     return zip_buffer
@@ -119,27 +116,32 @@ api_key = get_api_session_key_from_client(client)
 if not api_key:
     api_key = st.text_input("Definedge API Session Key", type="password")
 
-if api_key and not df_filtered.empty:
+# --- Split parts always visible ---
+if not df_filtered.empty:
     parts = chunk_df(df_filtered.reset_index(drop=True), int(part_size))
     st.subheader(f"Parts: {len(parts)} (≈ {part_size} symbols each)")
 
-    # buttons for each part
     for idx, part_df in enumerate(parts):
         if st.button(f"Download Part {idx+1} ({len(part_df)} symbols)"):
-            buf = build_zip(part_df, int(days_back), api_key, f"Part {idx+1}")
+            if not api_key:
+                st.error("❌ Please enter API Session Key first.")
+            else:
+                buf = build_zip(part_df, int(days_back), api_key, f"Part {idx+1}")
+                st.download_button(
+                    label=f"⬇️ Save Part {idx+1}",
+                    data=buf.getvalue(),
+                    file_name=f"nse_part_{idx+1:02d}.zip",
+                    mime="application/zip"
+                )
+
+    if st.button("⬇️ Download ALL"):
+        if not api_key:
+            st.error("❌ Please enter API Session Key first.")
+        else:
+            buf = build_zip(df_filtered, int(days_back), api_key, "ALL")
             st.download_button(
-                label=f"⬇️ Save Part {idx+1}",
+                label="⬇️ Save ALL",
                 data=buf.getvalue(),
-                file_name=f"nse_part_{idx+1:02d}.zip",
+                file_name="nse_all.zip",
                 mime="application/zip"
             )
-
-    # Download ALL
-    if st.button("⬇️ Download ALL"):
-        buf = build_zip(df_filtered, int(days_back), api_key, "ALL")
-        st.download_button(
-            label="⬇️ Save ALL",
-            data=buf.getvalue(),
-            file_name="nse_all.zip",
-            mime="application/zip"
-        )
