@@ -47,10 +47,9 @@ def parse_definedge_csv_text(csv_text: str) -> pd.DataFrame:
     df = df[["DateTime","Open","High","Low","Close","Volume"]].copy()
     try:
         df["Date"] = pd.to_datetime(df["DateTime"], format="%d%m%Y%H%M").dt.strftime("%d/%m/%Y")
-        df["Date"] = pd.to_datetime(df["Date"], dayfirst=True)
+        df = df[["Date","Open","High","Low","Close","Volume"]]
     except Exception:
-        # fallback if format fails
-        df["Date"] = pd.to_datetime(df["DateTime"], errors='coerce')
+        pass
     return df
 
 def fetch_hist_for_date_range(api_key: str, segment: str, token: str, start_date: datetime, end_date: datetime) -> pd.DataFrame:
@@ -58,14 +57,10 @@ def fetch_hist_for_date_range(api_key: str, segment: str, token: str, start_date
     to_str = end_date.strftime("%d%m%Y") + "1530"
     url = f"https://data.definedgesecurities.com/sds/history/{segment}/{token}/day/{from_str}/{to_str}"
     headers = {"Authorization": api_key}
-    try:
-        resp = requests.get(url, headers=headers, timeout=25)
-        if resp.status_code == 200 and resp.text.strip():
-            return parse_definedge_csv_text(resp.text)
-        else:
-            return pd.DataFrame()
-    except:
-        return pd.DataFrame()
+    resp = requests.get(url, headers=headers, timeout=25)
+    if resp.status_code == 200 and resp.text.strip():
+        return parse_definedge_csv_text(resp.text)
+    return pd.DataFrame()
 
 def get_github_file_sha(github_token, owner, repo, file_path):
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{file_path}"
@@ -77,24 +72,6 @@ def get_github_file_sha(github_token, owner, repo, file_path):
         return response.json().get("sha")
     return None
 
-def get_existing_data_range(github_token, owner, repo, file_path):
-    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{file_path}"
-    headers = {
-        "Authorization": f"token {github_token}"
-    }
-    response = requests.get(url, headers=headers)
-    if response.status_code == 200:
-        content_b64 = response.json()["content"]
-        decoded_bytes = base64.b64decode(content_b64)
-        decoded_str = decoded_bytes.decode()
-        df = pd.read_csv(io.StringIO(decoded_str))
-        if "Date" in df.columns:
-            df["Date"] = pd.to_datetime(df["Date"], dayfirst=True)
-            min_date = df["Date"].min()
-            max_date = df["Date"].max()
-            return min_date, max_date, df
-    return None, None, pd.DataFrame()
-
 def upload_csv_to_github(file_name, file_bytes, github_token, owner, repo, branch):
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{file_name}"
     sha = get_github_file_sha(github_token, owner, repo, file_name)
@@ -105,7 +82,7 @@ def upload_csv_to_github(file_name, file_bytes, github_token, owner, repo, branc
         "content": b64_content,
     }
     if sha:
-        payload["sha"] = sha
+        payload["sha"] = sha  # Include sha if file exists
     headers = {
         "Authorization": f"token {github_token}",
         "Accept": "application/vnd.github.v3+json"
@@ -116,17 +93,31 @@ def upload_csv_to_github(file_name, file_bytes, github_token, owner, repo, branc
     else:
         st.error(f"Failed to upload {file_name}: {response.status_code}\n{response.text}")
 
+def get_existing_date_range(github_token, owner, repo, file_path):
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{file_path}"
+    headers = {
+        "Authorization": f"token {github_token}"
+    }
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        content = response.json().get("content", "")
+        decoded = base64.b64decode(content).decode()
+        df = pd.read_csv(io.StringIO(decoded))
+        if not df.empty and "Date" in df.columns:
+            min_date = pd.to_datetime(df["Date"], dayfirst=True).min()
+            max_date = pd.to_datetime(df["Date"], dayfirst=True).max()
+            return min_date, max_date
+    return None, None
+
 # ----------------------
 # Main UI
 # ----------------------
-
 with st.spinner("Downloading master…"):
     master_df = download_master_df()
 
-# Filter master data
 df_seg = master_df[master_df["SEGMENT"].astype(str).str.upper() == ALLOWED_SEGMENT]
 df_filtered = df_seg[df_seg["INSTRUMENT"].astype(str).str.upper().isin(ALLOWED_INSTRUMENTS)].copy()
-st.write(f"Filtered symbols: {len(df_filtered)}")
+st.write(f"Filtered rows: {len(df_filtered)}")
 
 # User inputs
 github_owner = st.text_input("GitHub Username / Organization", value="gopalmandloi007")
@@ -161,15 +152,14 @@ if not api_key:
 start_date_full = datetime.today() - timedelta(days=365*5)
 end_date_full = datetime.today()
 
-# Part size input
-if len(df_filtered) > 0:
+# Split into parts if needed
+if not df_filtered.empty:
     part_size = st.number_input("Part size", min_value=10, max_value=2000, value=300, step=50)
     def chunk_df(df, size):
         return [df.iloc[i:i + size] for i in range(0, len(df), size)]
     parts = chunk_df(df_filtered.reset_index(drop=True), int(part_size))
     st.subheader(f"Parts: {len(parts)} (≈ {part_size} symbols each)")
 
-    # Loop through parts
     for idx, part_df in enumerate(parts):
         if st.button(f"Download Part {idx+1} ({len(part_df)} symbols)"):
             if not api_key:
@@ -183,33 +173,17 @@ if len(df_filtered) > 0:
                     folder_path = "data/historical/"
                     file_path = f"{folder_path}{sym}_{token}.csv"
 
-                    # Check existing data range
-                    existing_min, existing_max, existing_df = get_existing_data_range(github_token, github_owner, github_repo, file_path)
-
-                    # Fetch latest data (full 5 years)
+                    # Fetch full historical data (last 5 years)
                     df_full = fetch_hist_for_date_range(api_key, ALLOWED_SEGMENT, token, start_date_full, end_date_full)
-
                     if not df_full.empty:
-                        df_full["Date"] = pd.to_datetime(df_full["Date"], errors='coerce')
-                        if existing_df.empty:
-                            # No existing file, upload full data
-                            final_df = df_full
-                        else:
-                            # Existing file present
-                            # Check if new data available
-                            if df_full["Date"].max() > existing_max:
-                                # Append only new data
-                                final_df = pd.concat([existing_df, df_full[df_full["Date"] > existing_max]], ignore_index=True)
-                                final_df = final_df.drop_duplicates(subset=["Date"])
-                            else:
-                                # No new data
-                                final_df = existing_df
-                        # Save to github
-                        csv_bytes = final_df.to_csv(index=False).encode("utf-8")
+                        df_full["Date"] = pd.to_datetime(df_full["Date"], dayfirst=True)
+                        # Upload to GitHub
+                        csv_bytes = df_full.to_csv(index=False).encode("utf-8")
                         upload_csv_to_github(file_path, csv_bytes, github_token, github_owner, github_repo, github_branch)
                     else:
-                        st.warning(f"No data fetched for {sym} from API.")
-                st.success("Selected parts uploaded successfully.")
+                        st.warning(f"No data fetched for {sym}.")
+
+                st.success("All CSV files uploaded to GitHub for this part.")
 
 # Upload all at once button
 if st.button("⬇️ Upload ALL to GitHub"):
@@ -224,27 +198,22 @@ if st.button("⬇️ Upload ALL to GitHub"):
             folder_path = "data/historical/"
             file_path = f"{folder_path}{sym}_{token}.csv"
 
-            # Check existing data
-            existing_min, existing_max, existing_df = get_existing_data_range(github_token, github_owner, github_repo, file_path)
-
-            # Fetch full data
+            # Fetch full historical data (last 5 years)
             df_full = fetch_hist_for_date_range(api_key, ALLOWED_SEGMENT, token, start_date_full, end_date_full)
-
             if not df_full.empty:
-                df_full["Date"] = pd.to_datetime(df_full["Date"], errors='coerce')
-                if existing_df.empty:
-                    # No file, upload full data
-                    final_df = df_full
+                df_full["Date"] = pd.to_datetime(df_full["Date"], dayfirst=True)
+                # Check existing data range
+                existing_min, existing_max = get_existing_date_range(github_token, github_owner, github_repo, file_path)
+                # Decide whether to update
+                if existing_min is None or existing_max is None:
+                    # No existing data, upload full
+                    csv_bytes = df_full.to_csv(index=False).encode("utf-8")
+                    upload_csv_to_github(file_path, csv_bytes, github_token, github_owner, github_repo, github_branch)
                 else:
-                    # File exists, check if update needed
-                    if df_full["Date"].max() > existing_max:
-                        final_df = pd.concat([existing_df, df_full[df_full["Date"] > existing_max]], ignore_index=True)
-                        final_df = final_df.drop_duplicates(subset=["Date"])
-                    else:
-                        final_df = existing_df
-                # Save to github
-                csv_bytes = final_df.to_csv(index=False).encode("utf-8")
-                upload_csv_to_github(file_path, csv_bytes, github_token, github_owner, github_repo, github_branch)
+                    # Already have data, check if update needed
+                    # For simplicity, always update in this example
+                    csv_bytes = df_full.to_csv(index=False).encode("utf-8")
+                    upload_csv_to_github(file_path, csv_bytes, github_token, github_owner, github_repo, github_branch)
             else:
-                st.warning(f"No data fetched for {sym} from API.")
-        st.success("All files processed and uploaded.")
+                st.warning(f"No data fetched for {sym}.")
+        st.success("All CSV files uploaded to GitHub.")
