@@ -89,10 +89,14 @@ def get_existing_data_range(github_token, owner, repo, file_path):
         decoded_str = decoded_bytes.decode()
         df = pd.read_csv(io.StringIO(decoded_str))
         if "Date" in df.columns:
-            df["Date"] = pd.to_datetime(df["Date"], dayfirst=True)
-            min_date = df["Date"].min()
-            max_date = df["Date"].max()
-            return min_date, max_date, df
+            # Convert with errors='coerce' to handle invalid date entries
+            df["Date"] = pd.to_datetime(df["Date"], errors='coerce', dayfirst=True)
+            # Drop rows with invalid dates
+            df = df.dropna(subset=["Date"])
+            if not df.empty:
+                min_date = df["Date"].min()
+                max_date = df["Date"].max()
+                return min_date, max_date, df
     return None, None, pd.DataFrame()
 
 def upload_csv_to_github(file_name, file_bytes, github_token, owner, repo, branch):
