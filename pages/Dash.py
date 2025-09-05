@@ -246,10 +246,15 @@ for col in ["avg_buy_price", "quantity", "ltp", "prev_close"]:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
+# Assign the fetched 'ltp' and 'prev_close' to df
+df['ltp'] = ltp_list
+df['prev_close'] = prev_close_list
+df['prev_close_source'] = prev_source_list
+
 # Calculate invested_value
 df["invested_value"] = df["avg_buy_price"] * df["quantity"]
 
-# Check for 'ltp' column and compute current_value & today_pnl
+# Check if 'ltp' exists properly
 if 'ltp' in df.columns:
     df["current_value"] = df["ltp"] * df["quantity"]
     df["today_pnL"] = (df["ltp"] - df["prev_close"]) * df["quantity"]
@@ -356,7 +361,7 @@ total_initial_risk = df["initial_risk"].sum()
 total_open_risk = df["open_risk"].sum()
 total_realized_if_all_tsl = df["realized_if_tsl_hit"].sum()
 
-# Display KPIs
+# ------------------ Display KPIs ------------------
 st.subheader("💰 Overall Summary")
 k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("Total Invested", f"₹{total_invested:,.2f}")
@@ -368,7 +373,12 @@ k5.metric("Open Risk (TSL)", f"₹{total_open_risk:,.2f}")
 # Messaging
 total_positions = len(df)
 breakeven_count = int((df["open_risk"] == 0).sum())
-profitable_by_ltp = int((df["ltp"] > df["avg_buy_price"]).sum())
+
+# Check if 'ltp' exists before calculating profitable_by_ltp
+if 'ltp' in df.columns:
+    profitable_by_ltp = int((df["ltp"] > df["avg_buy_price"]).sum())
+else:
+    profitable_by_ltp = 0
 
 if breakeven_count == total_positions:
     st.success(f"✅ All {total_positions} positions have TSL >= AvgBuy (no open risk). {profitable_by_ltp} currently profitable.")
