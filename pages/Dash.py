@@ -28,10 +28,6 @@ def parse_definedge_csv_text(csv_text: str) -> pd.DataFrame:
 
 # ------------------ Helper: get robust previous close ------------------
 def get_robust_prev_close_from_hist(hist_df: pd.DataFrame, today_date: date):
-    """
-    Given a parsed historical DataFrame with 'DateTime' and 'Close',
-    return (prev_close_value_or_None, reason_string).
-    """
     try:
         if "DateTime" not in hist_df.columns or "Close" not in hist_df.columns:
             return None, "Missing required columns"
@@ -203,7 +199,7 @@ try:
             prev_close_from_quote = None
             # ltp remains 0.0 if error
 
-        # Fall back to historical data
+        # Fall back to historical data if prev_close not in quote
         if prev_close_from_quote is None:
             try:
                 from_date = (today_dt - timedelta(days=30)).strftime("%d%m%Y%H%M")
@@ -245,7 +241,7 @@ try:
 except:
     pass
 
-# Calculate P&L, invested, current, etc.
+# Convert columns to numeric and fill NaNs
 for col in ["avg_buy_price", "quantity", "ltp", "prev_close"]:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -253,18 +249,18 @@ for col in ["avg_buy_price", "quantity", "ltp", "prev_close"]:
 # Calculate invested_value
 df["invested_value"] = df["avg_buy_price"] * df["quantity"]
 
-# Check for 'ltp'
+# Check for 'ltp' column and compute current_value & today_pnl
 if 'ltp' in df.columns:
     df["current_value"] = df["ltp"] * df["quantity"]
-    df["today_pnl"] = (df["ltp"] - df["prev_close"]) * df["quantity"]
+    df["today_pnL"] = (df["ltp"] - df["prev_close"]) * df["quantity"]
 else:
     st.error("LTP column missing. Cannot compute current value or today's P&L.")
     df["current_value"] = 0
-    df["today_pnl"] = 0
+    df["today_pnL"] = 0
 
 # Calculate overall P&L
 df["overall_pnl"] = df["current_value"] - df["invested_value"]
-# Capital allocation
+# Capital allocation %
 df["capital_allocation_%"] = (df["invested_value"] / capital) * 100
 
 # ------------------ Calculate stops and targets ------------------
@@ -355,7 +351,7 @@ for i, tp in enumerate(target_pcts, start=1):
 total_invested = df["invested_value"].sum()
 total_current = df["current_value"].sum()
 total_overall_pnl = df["overall_pnl"].sum()
-total_today_pnl = df["today_pnl"].sum()
+total_today_pnl = df["today_pnL"].sum()
 total_initial_risk = df["initial_risk"].sum()
 total_open_risk = df["open_risk"].sum()
 total_realized_if_all_tsl = df["realized_if_tsl_hit"].sum()
@@ -403,7 +399,7 @@ if not losers.empty:
     st.table(losers[["symbol", "quantity", "avg_buy_price", "tsl_price", "realized_if_tsl_hit"]].sort_values(by="realized_if_tsl_hit").head(10))
 
 # Positions & risk table
-display_cols = ["symbol", "quantity", "side", "avg_buy_price", "ltp", "prev_close", "prev_close_source", "invested_value", "current_value", "overall_pnl", "today_pnl",
+display_cols = ["symbol", "quantity", "side", "avg_buy_price", "ltp", "prev_close", "prev_close_source", "invested_value", "current_value", "overall_pnl", "today_pnL",
                 "capital_allocation_%", "initial_sl_price", "tsl_price", "initial_risk", "open_risk", "realized_if_tsl_hit"]
 for i in range(1, len(target_pcts) + 1):
     display_cols += [f"target_{i}_pct", f"target_{i}_price"]
