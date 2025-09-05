@@ -253,16 +253,18 @@ for col in ["avg_buy_price", "quantity", "ltp", "prev_close"]:
 # Calculate invested_value
 df["invested_value"] = df["avg_buy_price"] * df["quantity"]
 
-# Check if 'ltp' exists before calculating 'current_value'
+# Check for 'ltp'
 if 'ltp' in df.columns:
     df["current_value"] = df["ltp"] * df["quantity"]
+    df["today_pnl"] = (df["ltp"] - df["prev_close"]) * df["quantity"]
 else:
-    st.error("LTP column missing. Cannot compute current value.")
+    st.error("LTP column missing. Cannot compute current value or today's P&L.")
     df["current_value"] = 0
+    df["today_pnl"] = 0
 
-# Now, calculate other metrics
-df["today_pnl"] = (df["ltp"] - df["prev_close"]) * df["quantity"]
+# Calculate overall P&L
 df["overall_pnl"] = df["current_value"] - df["invested_value"]
+# Capital allocation
 df["capital_allocation_%"] = (df["invested_value"] / capital) * 100
 
 # ------------------ Calculate stops and targets ------------------
