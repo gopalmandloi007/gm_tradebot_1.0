@@ -1,58 +1,78 @@
 # holdings.py
 import streamlit as st
 import pandas as pd
+from typing import List, Dict
 
-# Remove the show() function; execute code directly
+st.set_page_config(layout="wide")
+st.title("📦 Holdings — Definedge (Cleaned)")
 
-# Get client from session state
 client = st.session_state.get("client")
 if not client:
     st.error("⚠️ Not logged in")
     st.stop()
 
-# Debug: show current session state keys
-st.write("🔎 Debug: Current session_state keys:", list(st.session_state.keys()))
+debug = st.checkbox("Show debug info (holdings)", value=False)
 
-try:
-    # Make API call to get holdings data
-    resp = client.get_holdings()
-    # Debug: show raw API response
-    st.write("🔎 Debug: Raw holdings API response:", resp)
-
-    # Check if API response indicates success
-    if resp.get("status") != "SUCCESS":
-        st.error("⚠️ Holdings API failed")
-        st.stop()
-
-    # Extract data list from response
-    raw_data = resp.get("data", [])
-    # Debug: show extracted data
-    st.write("🔎 Debug: Extracted data field:", raw_data)
-
-    # Flatten all fields, focusing on NSE exchange
+def _flatten_holdings(raw_data: List[Dict]) -> List[Dict]:
+    """Flatten the holdings response structure into a list of rows, focusing on NSE."""
     records = []
     for h in raw_data:
-        # Extract all fields except 'tradingsymbol'
         base = {k: v for k, v in h.items() if k != "tradingsymbol"}
-        # Loop through each tradingsymbol entry
         for ts in h.get("tradingsymbol", []):
-            if ts.get("exchange") == "NSE":  # Only process NSE
-                # Merge base fields with tradingsymbol fields
+            # Only NSE to match your preference (you can remove filter if you want others)
+            if ts.get("exchange") == "NSE":
                 row = {**base, **ts}
                 records.append(row)
+    return records
 
-    # Debug: show flattened records
-    st.write("🔎 Debug: Flattened records:", records)
+def _pick_first(row: Dict, candidates: List[str], default=None):
+    for c in candidates:
+        if c in row and row[c] not in (None, ""):
+            return row[c]
+    return default
 
-    # Display data if available
-    if records:
-        df = pd.DataFrame(records)
-        # Show full DataFrame
-        st.success(f"✅ NSE Holdings found: {len(df)}")
-        st.dataframe(df, use_container_width=True)
-    else:
+try:
+    resp = client.get_holdings()
+    if debug:
+        st.write("🔎 Raw holdings response:", resp)
+
+    if not isinstance(resp, dict) or resp.get("status") != "SUCCESS":
+        st.error("⚠️ Holdings API returned non-success. Showing raw response:")
+        st.write(resp)
+        st.stop()
+
+    raw_list = resp.get("data", [])
+    records = _flatten_holdings(raw_list)
+
+    if not records:
         st.warning("⚠️ No NSE holdings found")
+        st.stop()
+
+    # Build dataframe with robust columns
+    df = pd.DataFrame(records)
+
+    # Normalize quantity fields (many APIs use different names)
+    df["quantity"] = df.apply(lambda r: int(float(_pick_first(r, ["quantity", "qty", "holding_qty", "holdings_quantity", "net_quantity"], 0))), axis=1)
+    df["available_quantity"] = df.apply(lambda r: int(float(_pick_first(r, ["sellable_quantity", "available_quantity", "available_qty", "sellable"], r.get("quantity", 0)))), axis=1)
+    # remaining qty we interpret as available qty; adjust logic if your API uses dif names
+    df["remaining_qty"] = df["available_quantity"]
+
+    # average / avg price
+    df["average_price"] = df.apply(lambda r: float(_pick_first(r, ["average_price", "avg_price", "avg_buy_price", "buy_price"], 0.0)), axis=1)
+
+    # canonical trading symbol column to match GTT pages
+    df["tradingsymbol"] = df["tradingsymbol"].astype(str).str.upper()
+
+    # small helpful columns
+    df = df[sorted(df.columns)]
+
+    # store for other pages
+    st.session_state["holdings_df"] = df
+
+    st.success(f"✅ NSE Holdings loaded: {len(df)} rows")
+    st.dataframe(df, use_container_width=True)
 
 except Exception as e:
-    # Catch any unexpected errors
     st.error(f"Holdings fetch failed: {e}")
+    import traceback
+    st.text(traceback.format_exc())
