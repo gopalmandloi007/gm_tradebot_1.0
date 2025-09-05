@@ -250,8 +250,17 @@ for col in ["avg_buy_price", "quantity", "ltp", "prev_close"]:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
+# Calculate invested_value
 df["invested_value"] = df["avg_buy_price"] * df["quantity"]
-df["current_value"] = df["ltp"] * df["quantity"]
+
+# Check if 'ltp' exists before calculating 'current_value'
+if 'ltp' in df.columns:
+    df["current_value"] = df["ltp"] * df["quantity"]
+else:
+    st.error("LTP column missing. Cannot compute current value.")
+    df["current_value"] = 0
+
+# Now, calculate other metrics
 df["today_pnl"] = (df["ltp"] - df["prev_close"]) * df["quantity"]
 df["overall_pnl"] = df["current_value"] - df["invested_value"]
 df["capital_allocation_%"] = (df["invested_value"] / capital) * 100
