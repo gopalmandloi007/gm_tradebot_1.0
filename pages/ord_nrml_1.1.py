@@ -1,4 +1,3 @@
-# pages/place_order.py
 import streamlit as st
 import pandas as pd
 import io
@@ -145,16 +144,22 @@ with col4:
         st.session_state["desired_price"] = current_ltp
 
 # -----------------------
-# Buy/Sell selector OUTSIDE form
-# -----------------------
-order_type = st.radio("Buy / Sell", ["BUY", "SELL"], index=0, horizontal=True)
-color = "green" if order_type == "BUY" else "red"
-st.markdown(f"<h4 style='color:{color};'>You selected {order_type}</h4>", unsafe_allow_html=True)
-
-# -----------------------
-# Order form (rest fields)
+# Order form
 # -----------------------
 with st.form("place_order_form"):
+    st.subheader("Order Details")
+    order_type = st.radio("Buy / Sell", ["BUY", "SELL"], index=0, horizontal=True)
+
+    # Dynamic color box (changes instantly on selection)
+    bg_color = "#e6ffe6" if order_type == "BUY" else "#ffe6e6"
+    st.markdown(
+        f"<div style='background-color:{bg_color};padding:10px;border-radius:10px;'>"
+        f"<b>You selected {order_type}</b>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
+
+    # Show rest of form
     price_type = st.radio("Price Type", ["LIMIT", "MARKET", "SL-LIMIT", "SL-MARKET"], index=0, horizontal=True)
     place_by = st.radio("Place by", ["Quantity", "Amount"], index=0, horizontal=True)
 
@@ -164,7 +169,7 @@ with st.form("place_order_form"):
     with col_amt:
         amount = float(st.number_input("Amount (₹)", min_value=0.0, step=0.05, value=0.0))
 
-    # Trigger price
+    # Trigger price (persist)
     if "trigger_price" not in st.session_state:
         st.session_state["trigger_price"] = 0.0
     trigger_price = 0.0
@@ -177,11 +182,11 @@ with st.form("place_order_form"):
             key="trigger_price"
         )
 
-    # Price input
+    # Price input (persist)
     if "desired_price" not in st.session_state:
         st.session_state["desired_price"] = float(current_ltp or 0.0)
     if price_type == "MARKET":
-        st.info("Market order: live price will be used.")
+        st.info("Market order: live price will be used. Price input ignored.")
         price_input = current_ltp
     else:
         price_input = st.number_input(
@@ -199,14 +204,14 @@ with st.form("place_order_form"):
 
     submit = st.form_submit_button("Preview Order")
 
-# Auto-calc qty
+# Auto-calc quantity
 effective_price = price_input if price_type != "MARKET" else (current_ltp or price_input)
 if place_by == "Amount" and amount > 0 and effective_price > 0:
     computed_qty = int(amount // effective_price)
 else:
     computed_qty = quantity
 
-# Lot enforcement
+# Lot size enforcement
 if computed_qty > 0:
     if computed_qty % lot_size != 0:
         adjusted_qty = max(lot_size, (computed_qty // lot_size) * lot_size)
@@ -218,12 +223,12 @@ else:
     lot_notice = ""
     computed_qty = lot_size
 
-# Estimate
+# Estimated cost (dynamic color)
 est_value = computed_qty * effective_price
+bg_color = "#e6ffe6" if order_type == "BUY" else "#ffe6e6"
+
 st.markdown("---")
 st.subheader("Order Estimate")
-
-bg_color = "#e6ffe6" if order_type == "BUY" else "#ffe6e6"
 st.markdown(
     f"<div style='background-color:{bg_color};padding:10px;border-radius:10px;'>"
     f"<b>Order Type:</b> {order_type} | <b>Price Type:</b> {price_type}<br>"
@@ -269,7 +274,7 @@ if submit:
         st.session_state['_pending_place_order'] = payload
         st.success("✅ Preview ready — confirm below.")
 
-# Confirm
+# Confirmation
 if '_pending_place_order' in st.session_state:
     st.markdown("---")
     st.subheader("Confirm Order")
@@ -286,3 +291,17 @@ if '_pending_place_order' in st.session_state:
                 st.write("🔎 Raw response:", resp)
             if isinstance(resp, dict) and resp.get("status") == "SUCCESS":
                 st.success(f"✅ Order placed. Order ID: {resp.get('order_id')}")
+                del st.session_state['_pending_place_order']
+                st.rerun()
+            else:
+                st.error(f"❌ Placement failed: {resp}")
+        except Exception as e:
+            st.error(f"🚨 Exception: {e}")
+            st.text(traceback.format_exc())
+    if c2.button("❌ Cancel"):
+        del st.session_state['_pending_place_order']
+        st.info("Order preview cancelled.")
+
+# Footer
+st.markdown("---")
+st.info("Tip: Use Refresh Master if symbol missing. Manual mode for quick entry. MARKET = live price.")
