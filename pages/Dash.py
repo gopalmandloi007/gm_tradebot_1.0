@@ -1,15 +1,16 @@
-# final_holdings_dashboard.py
+# final_holdings_dashboard.py (UPDATED: adds capital allocation pie & risk bar charts + SL/Targets table)
 import streamlit as st
 import pandas as pd
 import io
 from datetime import datetime, timedelta, date
 import plotly.graph_objects as go
+import plotly.express as px
 import traceback
 import requests
 
 # ------------------ Configuration ------------------
 st.set_page_config(layout="wide")
-st.title("📊 Trading Dashboard — Definedge (Risk Managed — Improved) — FIXED")
+st.title("📊 Trading Dashboard — Definedge (Risk Managed — Improved) — FIXED + Charts")
 
 # ------------------ Defaults ------------------
 DEFAULT_TOTAL_CAPITAL = 1400000
@@ -27,6 +28,7 @@ def safe_float(x):
         return float(s)
     except Exception:
         return None
+
 
 def find_in_nested(obj, keys):
     if obj is None:
@@ -69,6 +71,7 @@ def parse_definedge_csv_text(csv_text: str) -> pd.DataFrame:
     res = res.sort_values('DateTime').reset_index(drop=True)
     return res
 
+
 def fetch_hist_for_date_range(api_key: str, segment: str, token: str, start_date: datetime, end_date: datetime) -> pd.DataFrame:
     from_str = start_date.strftime("%d%m%Y") + "0000"
     to_str = end_date.strftime("%d%m%Y") + "1530"
@@ -81,6 +84,7 @@ def fetch_hist_for_date_range(api_key: str, segment: str, token: str, start_date
     except Exception:
         return pd.DataFrame()
     return pd.DataFrame()
+
 
 def get_robust_prev_close_from_hist(hist_df: pd.DataFrame, today_date: date):
     try:
@@ -309,6 +313,14 @@ except Exception as e:
     st.text(traceback.format_exc())
     st.stop()
 
+# show sample hist if available
+try:
+    if 'last_hist_df' in locals() and last_hist_df is not None and last_hist_df.shape[0] > 0:
+        st.write('Historical data sample (last fetched symbol):')
+        st.dataframe(last_hist_df.head())
+except Exception:
+    pass
+
 # assign LTP and prev_close
 df['ltp'] = pd.to_numeric(pd.Series(ltp_list), errors='coerce').fillna(0.0)
 _df_prev = pd.to_numeric(pd.Series(prev_close_list), errors='coerce')
@@ -405,6 +417,39 @@ k5.metric('Open Risk (TSL)', f'₹{total_open_risk:,.2f}')
 display_cols = ['symbol', 'quantity', 'open_qty', 'buy_qty', 'sold_qty', 'avg_buy_price', 'ltp', 'prev_close', 'pct_change', 'today_pnL', 'realized_pnl', 'unrealized_pnl', 'total_pnl', 'capital_allocation_%', 'initial_sl_price', 'tsl_price', 'initial_risk', 'open_risk']
 st.subheader('📋 Positions & Risk Table')
 st.dataframe(df[display_cols].sort_values(by='capital_allocation_%', ascending=False).reset_index(drop=True), use_container_width=True)
+
+# --- NEW: Charts & SL/Targets table ---
+if not df.empty:
+    st.subheader('📊 Capital Allocation')
+    try:
+        # Pie chart for capital allocation
+        fig_pie = px.pie(df, names='symbol', values='invested_value', title='Capital Allocation (by invested amount)', hover_data=['capital_allocation_%', 'quantity'])
+        fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+        st.plotly_chart(fig_pie, use_container_width=True)
+    except Exception:
+        st.write('Could not render capital allocation pie chart.')
+
+    st.subheader('📈 Risk Breakdown (per stock)')
+    try:
+        # Bar chart showing initial risk vs open risk per stock
+        risk_df = df.sort_values('open_risk', ascending=False)
+        # if very large number of symbols, allow user to pick top N
+        max_bars = st.sidebar.number_input('Show top N symbols by open risk', min_value=3, max_value=50, value=10, step=1, key='topn_risk')
+        plot_df = risk_df.head(int(max_bars))
+        fig_bar = px.bar(plot_df, x='symbol', y=['initial_risk', 'open_risk'], title='Initial Risk vs Open Risk per Stock', labels={'value':'Amount (₹)', 'symbol':'Symbol'})
+        fig_bar.update_layout(barmode='group', xaxis={'categoryorder':'total descending'})
+        st.plotly_chart(fig_bar, use_container_width=True)
+    except Exception:
+        st.write('Could not render risk bar chart.')
+
+    # Show SL and target prices in a concise table
+    try:
+        st.subheader('🎯 SL & Target Prices (per position)')
+        target_cols = ['initial_sl_price'] + [f'target_{i}_price' for i in range(1, len(target_pcts)+1)]
+        sl_table = df[['symbol'] + target_cols].fillna(0).reset_index(drop=True)
+        st.dataframe(sl_table, use_container_width=True)
+    except Exception:
+        st.write('Could not render SL & Targets table.')
 
 # Export
 st.subheader('📥 Export')
