@@ -9,7 +9,7 @@ import requests
 
 # ------------------ Configuration ------------------
 st.set_page_config(layout="wide")
-st.title("📊 Trading Dashboard — Definedge (Risk Managed — Improved) — FIXED")
+st.title("📊 Trading Dashboard — Definedge (Risk Managed — Improved)")
 
 # ------------------ Defaults ------------------
 DEFAULT_TOTAL_CAPITAL = 1400000
@@ -48,7 +48,6 @@ def find_in_nested(obj, keys):
                 return res
     return None
 
-# copy your parse_definedge_csv_text & fetch_hist_for_date_range & get_robust_prev_close_from_hist here
 def parse_definedge_csv_text(csv_text: str) -> pd.DataFrame:
     if not csv_text or not isinstance(csv_text, str):
         return pd.DataFrame(columns=["DateTime", "Close"])
@@ -120,15 +119,10 @@ if not client:
     st.error('⚠️ Not logged in. Please login first from the Login page.')
     st.stop()
 
-debug = st.sidebar.checkbox('Show debug (raw holdings/quotes)', value=False)
-use_definedge_api_key = st.sidebar.checkbox('Use Definedge API key for history fetch (if needed)', value=False)
-if use_definedge_api_key:
-    st.sidebar.text_input('Definedge API key (put into session_state as definedge_api_key)', key='definedge_api_key_input')
-
-# Sidebar risk inputs (unchanged)
-capital = st.sidebar.number_input('Total Capital (₹)', value=DEFAULT_TOTAL_CAPITAL, step=10000, key='capital_input')
-initial_sl_pct = st.sidebar.number_input('Initial Stop Loss (%)', value=DEFAULT_INITIAL_SL_PCT, min_value=0.1, max_value=50.0, step=0.1, key='initial_sl_input')/100
-targets_input = st.sidebar.text_input('Targets % (comma separated)', ','.join(map(str, DEFAULT_TARGETS)), key='targets_input')
+# Sidebar inputs
+capital = st.sidebar.number_input('Total Capital (₹)', value=DEFAULT_TOTAL_CAPITAL, step=10000)
+initial_sl_pct = st.sidebar.number_input('Initial Stop Loss (%)', value=DEFAULT_INITIAL_SL_PCT, min_value=0.1, max_value=50.0, step=0.1)/100
+targets_input = st.sidebar.text_input('Targets % (comma separated)', ','.join(map(str, DEFAULT_TARGETS)))
 try:
     target_pcts = sorted([max(0.0, float(t.strip())/100.0) for t in targets_input.split(',') if t.strip()])
     if not target_pcts:
@@ -136,285 +130,78 @@ try:
 except Exception:
     st.sidebar.error('Invalid Targets input — using defaults')
     target_pcts = [t/100.0 for t in DEFAULT_TARGETS]
-trailing_thresholds = target_pcts
-show_actions = st.sidebar.checkbox('Show Action Buttons (Square-off / Place SL)', value=False, key='show_actions')
 
-# Fetch holdings
+# ------------------ Holdings Fetch ------------------
 try:
     holdings_resp = client.get_holdings()
-    if debug:
-        st.write("🔎 raw holdings response (first item):", holdings_resp if isinstance(holdings_resp, dict) else str(holdings_resp)[:1000])
-
-    if not holdings_resp or holdings_resp.get('status') != 'SUCCESS':
-        st.warning('⚠️ No holdings found or API returned error')
-        st.stop()
-
-    raw_holdings = holdings_resp.get('data', [])
-    if not raw_holdings:
-        st.info('✅ No holdings found.')
-        st.stop()
-
-    # Parse holdings: pick NSE tradingsymbol entry per item
+    raw_holdings = holdings_resp.get('data', []) if holdings_resp else []
     rows = []
     for item in raw_holdings:
         dp_qty = safe_float(item.get('dp_qty')) or 0.0
         t1_qty = safe_float(item.get('t1_qty')) or 0.0
-        # sold quantity (trade_qty) preferred, else holding_used fallback
-        trade_qty = safe_float(item.get('trade_qty'))
-        if trade_qty is None:
-            trade_qty = safe_float(item.get('holding_used')) or 0.0
+        trade_qty = safe_float(item.get('trade_qty')) or safe_float(item.get('holding_used')) or 0.0
         sell_amt = safe_float(item.get('sell_amt') or item.get('sell_amount') or item.get('sellAmt')) or 0.0
         avg_buy_price = safe_float(item.get('avg_buy_price') or item.get('average_price')) or 0.0
-
         ts_field = item.get('tradingsymbol')
-        nse_entry = None
-        if isinstance(ts_field, list):
-            for ts in ts_field:
-                if isinstance(ts, dict) and ts.get('exchange') == 'NSE':
-                    nse_entry = ts
-                    break
-        elif isinstance(ts_field, dict):
-            if ts_field.get('exchange') == 'NSE':
-                nse_entry = ts_field
-        elif isinstance(ts_field, str):
-            nse_entry = {'tradingsymbol': ts_field, 'exchange': 'NSE', 'token': item.get('token')}
-
-        if not nse_entry:
-            continue
-
+        symbol = ts_field if isinstance(ts_field, str) else item.get('token')
+        token = item.get('token')
         rows.append({
-            'symbol': nse_entry.get('tradingsymbol') or '',
-            'token': nse_entry.get('token') or item.get('token') or '',
+            'symbol': symbol,
+            'token': token,
             'dp_qty': dp_qty,
             't1_qty': t1_qty,
             'trade_qty': int(trade_qty),
             'sell_amt': sell_amt,
-            'avg_buy_price': avg_buy_price,
-            'raw': item
+            'avg_buy_price': avg_buy_price
         })
-
-    if not rows:
-        st.warning('⚠️ No NSE holdings found after parsing.')
+    df = pd.DataFrame(rows)
+    if df.empty:
+        st.warning('⚠️ No holdings found.')
         st.stop()
 
-    df = pd.DataFrame(rows)
-
-    # Aggregate by symbol to be safe (sum quantities & sell amounts, weighted avg buy)
-    def _agg(g):
-        buy_qty = (g['dp_qty'] + g['t1_qty']).sum()
-        sold_qty = g['trade_qty'].sum()
-        sell_amt = g['sell_amt'].sum()
-        # weighted average by buy quantity
-        weighted_avg = (g['avg_buy_price'] * (g['dp_qty'] + g['t1_qty'])).sum() / max(buy_qty, 1)
-        token = g['token'].iloc[0]
-        return pd.Series({
-            'dp_qty': g['dp_qty'].sum(),
-            't1_qty': g['t1_qty'].sum(),
-            'buy_qty': int(buy_qty),
-            'trade_qty': int(sold_qty),
-            'sell_amt': sell_amt,
-            'avg_buy_price': float(weighted_avg),
-            'token': token
-        })
-
-    df = df.groupby('symbol', as_index=False).apply(_agg).reset_index()
-
-    # Compute quantities: open = buys - sold
+    # Aggregation
+    df['buy_qty'] = df['dp_qty'] + df['t1_qty']
     df['open_qty'] = (df['buy_qty'] - df['trade_qty']).clip(lower=0).astype(int)
-    df['sold_qty'] = df['trade_qty'].astype(int)
-    df['quantity'] = df['open_qty']  # compatibility for rest of UI
+    df['quantity'] = df['open_qty']
 
-    # Fetch LTP + prev_close
-    st.info('Fetching live prices and previous close (robust logic).')
-    ltp_list = []
-    prev_close_list = []
-    prev_source_list = []
-
-    today_dt = datetime.now()
-    today_date = today_dt.date()
-
-    LTP_KEYS = ['ltp', 'last_price', 'lastTradedPrice', 'lastPrice', 'ltpPrice', 'last']
-    POSSIBLE_PREV_KEYS = [
-        'prev_close', 'previous_close', 'previousClose', 'previousClosePrice', 'prevClose',
-        'prevclose', 'previousclose', 'prev_close_price', 'yesterdayClose', 'previous_close_price',
-        'prev_close_val', 'previous_close_val', 'yesterday_close', 'close_prev'
-    ]
-
-    last_hist_df = None
-
-    for idx, row in df.iterrows():
-        token = row.get('token')
-        prev_close_from_quote = None
-        ltp_val = None
-
+    # Live LTP + prev close
+    LTP_KEYS = ['ltp', 'last_price', 'lastTradedPrice']
+    PREV_KEYS = ['prev_close','previous_close','previousClose']
+    ltps, prevs = [], []
+    for _, row in df.iterrows():
+        ltp, prev = None, None
         try:
-            quote_resp = client.get_quotes(exchange='NSE', token=token)
-            if debug:
-                st.write(f"quote_resp for {row['symbol'][:20]}:", quote_resp if isinstance(quote_resp, dict) else str(quote_resp)[:400])
-            if isinstance(quote_resp, dict) and quote_resp:
-                found_ltp = find_in_nested(quote_resp, LTP_KEYS)
-                if found_ltp is not None:
-                    ltp_val = safe_float(found_ltp)
-                found_prev = find_in_nested(quote_resp, POSSIBLE_PREV_KEYS)
-                if found_prev is not None:
-                    prev_close_from_quote = safe_float(found_prev)
+            q = client.get_quotes(exchange='NSE', token=row['token'])
+            ltp = safe_float(find_in_nested(q, LTP_KEYS))
+            prev = safe_float(find_in_nested(q, PREV_KEYS))
         except Exception:
-            prev_close_from_quote = None
-            ltp_val = None
+            pass
+        ltps.append(ltp or 0.0)
+        prevs.append(prev)
+    df['ltp'] = ltps
+    df['prev_close'] = prevs
 
-        prev_close = None
-        prev_source = None
+    # PnL calculations
+    df['realized_pnl'] = df['sell_amt'] - (df['trade_qty'] * df['avg_buy_price'])
+    df['unrealized_pnl'] = (df['ltp'] - df['avg_buy_price']) * df['open_qty']
+    df['today_pnL'] = (df['ltp'] - df['prev_close']) * df['open_qty']
+    df['pct_change'] = df.apply(lambda r: ((r['ltp'] - r['prev_close'])/r['prev_close']*100) if pd.notna(r['prev_close']) and r['prev_close'] != 0 else None, axis=1)
+    df['total_pnl'] = df['realized_pnl'] + df['unrealized_pnl']
 
-        if prev_close_from_quote is not None:
-            prev_close = float(prev_close_from_quote)
-            prev_source = 'quote'
-        else:
-            try:
-                hist_df = pd.DataFrame()
-                if hasattr(client, 'historical_csv'):
-                    try:
-                        from_date = (today_dt - timedelta(days=30)).strftime('%d%m%Y%H%M')
-                        to_date = today_dt.strftime('%d%m%Y%H%M')
-                        hist_csv = client.historical_csv(segment='NSE', token=token, timeframe='day', frm=from_date, to=to_date)
-                        hist_df = parse_definedge_csv_text(hist_csv)
-                    except Exception:
-                        hist_df = pd.DataFrame()
-                if (hist_df is None or hist_df.empty) and use_definedge_api_key:
-                    api_key = st.session_state.get('definedge_api_key') or st.session_state.get('definedge_api_key_input')
-                    if api_key:
-                        hist_df = fetch_hist_for_date_range(api_key, 'NSE', token, today_dt - timedelta(days=30), today_dt)
+    # Portfolio KPIs
+    total_today_pnl = df['today_pnL'].fillna(0).sum()
+    st.subheader('💰 Summary')
+    c1, c2 = st.columns(2)
+    c1.metric('Today PnL', f"₹{total_today_pnl:,.2f}")
+    if not df['pct_change'].isna().all():
+        avg_pct = df['pct_change'].mean(skipna=True)
+        c2.metric('% Change (avg)', f"{avg_pct:.2f}%")
 
-                if hist_df is not None and not hist_df.empty:
-                    last_hist_df = hist_df.copy()
-                    prev_close_val, reason = get_robust_prev_close_from_hist(hist_df, today_date)
-                    if prev_close_val is not None:
-                        prev_close = float(prev_close_val)
-                        prev_source = f'historical:{reason}'
-                    else:
-                        prev_close = None
-                        prev_source = f'historical_no_prev:{reason}'
-                else:
-                    prev_close = None
-                    prev_source = 'no_hist'
-            except Exception as exc:
-                prev_close = None
-                prev_source = f'fallback_error:{str(exc)[:120]}'
-
-        ltp_list.append(safe_float(ltp_val) or 0.0)
-        prev_close_list.append(prev_close)
-        prev_source_list.append(prev_source or 'unknown')
+    # Positions table
+    st.subheader('📋 Positions')
+    display_cols = ['symbol','quantity','avg_buy_price','ltp','prev_close','pct_change','today_pnL','realized_pnl','unrealized_pnl','total_pnl']
+    st.dataframe(df[display_cols].sort_values(by='today_pnL', ascending=False), use_container_width=True)
 
 except Exception as e:
-    st.error(f'⚠️ Error fetching holdings or prices: {e}')
+    st.error(f"⚠️ Error: {e}")
     st.text(traceback.format_exc())
-    st.stop()
-
-# show sample hist if available
-try:
-    if 'last_hist_df' in locals() and last_hist_df is not None and last_hist_df.shape[0] > 0:
-        st.write('Historical data sample (last fetched symbol):')
-        st.dataframe(last_hist_df.head())
-except Exception:
-    pass
-
-# assign LTP and prev_close
-df['ltp'] = pd.to_numeric(pd.Series(ltp_list), errors='coerce').fillna(0.0)
-_df_prev = pd.to_numeric(pd.Series(prev_close_list), errors='coerce')
-df['prev_close'] = _df_prev
-df['prev_close_source'] = prev_source_list
-
-# pnl calculations
-df['realized_pnl'] = df['sell_amt'] - (df['trade_qty'] * df['avg_buy_price'])
-df['unrealized_pnl'] = (df['ltp'] - df['avg_buy_price']) * df['open_qty']
-df['today_pnL'] = (df['ltp'] - df['prev_close']) * df['open_qty']
-df['pct_change'] = df.apply(lambda r: ((r['ltp'] - r['prev_close']) / r['prev_close'] * 100) if pd.notna(r['prev_close']) and r['prev_close'] != 0 else None, axis=1)
-df['total_pnl'] = df['realized_pnl'] + df['unrealized_pnl']
-
-# compatibility columns used later
-df['avg_buy_price'] = df['avg_buy_price'].astype(float)
-df['quantity'] = df['open_qty']
-df['invested_value'] = df['avg_buy_price'] * df['quantity']
-df['current_value'] = df['ltp'] * df['quantity']
-df['overall_pnl'] = df['current_value'] - df['invested_value']
-df['capital_allocation_%'] = (df['invested_value'] / capital) * 100
-
-# stops/targets code uses df['quantity'] (open positions)
-def calc_stops_targets(row):
-    avg = float(row.get('avg_buy_price') or 0.0)
-    qty = int(row.get('quantity') or 0)
-    ltp = float(row.get('ltp') or 0.0)
-    if qty == 0 or avg == 0:
-        return pd.Series({'side':'FLAT','initial_sl_price':0.0,'tsl_price':0.0,'targets':[0.0]*len(target_pcts),'initial_risk':0.0,'open_risk':0.0,'realized_if_tsl_hit':0.0})
-    side = 'LONG' if qty > 0 else 'SHORT'
-    if side == 'LONG':
-        initial_sl_price = round(avg * (1 - initial_sl_pct), 4)
-        targets = [round(avg * (1 + t), 4) for t in target_pcts]
-        perc = (ltp / avg - 1) if avg > 0 else 0.0
-        crossed_indices = [i for i, th in enumerate(trailing_thresholds) if perc >= th]
-        if crossed_indices:
-            idx_max = max(crossed_indices)
-            tsl_pct = 0.0 if idx_max == 0 else trailing_thresholds[idx_max - 1]
-            tsl_price = round(avg * (1 + tsl_pct), 4)
-        else:
-            tsl_price = initial_sl_price
-        tsl_price = max(tsl_price, initial_sl_price)
-        open_risk = round(max(0.0, (avg - tsl_price) * qty), 2)
-        initial_risk = round(max(0.0, (avg - initial_sl_price) * qty), 2)
-        realized_if_tsl_hit = round((tsl_price - avg) * qty, 2)
-        return pd.Series({'side':side,'initial_sl_price':initial_sl_price,'tsl_price':tsl_price,'targets':targets,'initial_risk':initial_risk,'open_risk':open_risk,'realized_if_tsl_hit':realized_if_tsl_hit})
-    else:
-        avg_abs = abs(avg)
-        initial_sl_price = round(avg_abs * (1 + initial_sl_pct), 4)
-        targets = [round(avg_abs * (1 - t), 4) for t in target_pcts]
-        perc = ((avg_abs - ltp) / avg_abs) if avg_abs > 0 else 0.0
-        crossed_indices = [i for i, th in enumerate(trailing_thresholds) if perc >= th]
-        if crossed_indices:
-            idx_max = max(crossed_indices)
-            tsl_pct_down = 0.0 if idx_max == 0 else trailing_thresholds[idx_max - 1]
-            tsl_price = round(avg_abs * (1 - tsl_pct_down), 4)
-        else:
-            tsl_price = initial_sl_price
-        open_risk = round(max(0.0, (tsl_price - avg_abs) * abs(qty)), 2)
-        initial_risk = round(max(0.0, (initial_sl_price - avg_abs) * abs(qty)), 2)
-        realized_if_tsl_hit = round((avg_abs - tsl_price) * abs(qty), 2)
-        return pd.Series({'side':side,'initial_sl_price':initial_sl_price,'tsl_price':tsl_price,'targets':targets,'initial_risk':initial_risk,'open_risk':open_risk,'realized_if_tsl_hit':realized_if_tsl_hit})
-
-stoppers = df.apply(calc_stops_targets, axis=1)
-df = pd.concat([df, stoppers], axis=1)
-
-for i, tp in enumerate(target_pcts, start=1):
-    df[f'target_{i}_pct'] = tp * 100
-    df[f'target_{i}_price'] = df['targets'].apply(lambda lst: round(lst[i-1], 4) if isinstance(lst, list) and len(lst) >= i else 0.0)
-
-# Portfolio KPIs
-total_invested = df['invested_value'].sum()
-total_current = df['current_value'].sum()
-total_overall_pnl = df['overall_pnl'].sum()
-missing_prev_count = int(df['prev_close'].isna().sum())
-total_today_pnl = df['today_pnL'].fillna(0.0).sum()
-total_initial_risk = df['initial_risk'].sum()
-total_open_risk = df['open_risk'].sum()
-total_realized_if_all_tsl = df['realized_if_tsl_hit'].sum()
-
-st.subheader('💰 Overall Summary')
-k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric('Total Invested', f'₹{total_invested:,.2f}')
-k2.metric('Total Current', f'₹{total_current:,.2f}')
-k3.metric('Unrealized PnL', f'₹{total_overall_pnl:,.2f}')
-if total_today_pnl >= 0:
-    k4.metric('Today PnL', f'₹{total_today_pnl:,.2f}', delta=f'₹{total_today_pnl:,.2f}')
-else:
-    k4.metric('Today PnL', f'₹{total_today_pnl:,.2f}', delta=f'₹{total_today_pnl:,.2f}', delta_color='inverse')
-if missing_prev_count > 0:
-    k4.caption(f"Note: {missing_prev_count} positions missing previous-close — their Today PnL not included.")
-k5.metric('Open Risk (TSL)', f'₹{total_open_risk:,.2f}')
-
-# Positions table
-display_cols = ['symbol', 'quantity', 'open_qty', 'buy_qty', 'sold_qty', 'avg_buy_price', 'ltp', 'prev_close', 'pct_change', 'today_pnL', 'realized_pnl', 'unrealized_pnl', 'total_pnl', 'capital_allocation_%', 'initial_sl_price', 'tsl_price', 'initial_risk', 'open_risk']
-st.subheader('📋 Positions & Risk Table')
-st.dataframe(df[display_cols].sort_values(by='capital_allocation_%', ascending=False).reset_index(drop=True), use_container_width=True)
-
-# Export
-st.subheader('📥 Export')
-csv_bytes = df.to_csv(index=False).encode('utf-8')
-st.download_button('Download positions with PnL (CSV)', csv_bytes, file_name='positions_pnl.csv', mime='text/csv')
