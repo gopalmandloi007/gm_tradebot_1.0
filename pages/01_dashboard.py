@@ -361,6 +361,62 @@ df = pd.concat([df, df.apply(calc_stops_targets, axis=1)], axis=1)
 st.subheader("📊 Portfolio Holdings")
 st.dataframe(df[['symbol','quantity','avg_buy_price','ltp','prev_close','pct_change','invested_value','current_value','overall_pnl','today_pnL','side','initial_sl_price','tsl_price','targets','initial_risk','open_risk','realized_if_tsl_hit']], use_container_width=True)
 
+# ---------- Summary Metrics ----------
+st.subheader("📌 Portfolio Summary")
+
+colA, colB, colC, colD, colE = st.columns(5)
+with colA:
+    st.metric("💰 Total Invested", f"₹{total_invested:,.2f}")
+with colB:
+    st.metric("📈 Current Value", f"₹{total_current:,.2f}")
+with colC:
+    st.metric("📊 Total PnL", f"₹{total_pnl:,.2f}")
+with colD:
+    st.metric("📅 Today's PnL", f"₹{total_today_pnl:,.2f}")
+with colE:
+    st.metric("💵 Cash in Hand", f"₹{cash_in_hand:,.2f}")
+
+# Portfolio Max Loss if all SL/TSL hit
+portfolio_max_loss = df['open_risk'].sum()
+st.error(f"⚠️ Max Loss if all SL/TSL Hit: ₹{portfolio_max_loss:,.2f}")
+
+# ---------- Charts ----------
+col1, col2 = st.columns(2)
+
+# Pie charts
+with col1:
+    fig1 = go.Figure(data=[go.Pie(labels=df['symbol'], values=df['invested_value'], textinfo='label+percent', hole=0.3)])
+    fig1.update_layout(title="Portfolio Allocation — Invested Value per Stock")
+    st.plotly_chart(fig1, use_container_width=True)
+
+with col2:
+    fig2 = go.Figure(data=[go.Pie(labels=['Invested','Cash in Hand'], values=[total_invested, cash_in_hand], textinfo='label+percent', hole=0.3)])
+    fig2.update_traces(marker=dict(colors=['blue','green']))
+    fig2.update_layout(title="Portfolio vs Cash Distribution")
+    st.plotly_chart(fig2, use_container_width=True)
+
+# Risk bar chart
+st.subheader("📉 Risk Profile per Stock")
+
+fig3 = go.Figure()
+fig3.add_trace(go.Bar(
+    x=df['symbol'], y=df['open_risk'],
+    name='Open Risk', marker_color='red',
+    text=[f"₹{v:,.0f}" for v in df['open_risk']], textposition="outside"
+))
+fig3.add_trace(go.Bar(
+    x=df['symbol'], y=df['realized_if_tsl_hit'],
+    name='Realized if TSL Hit', marker_color='green',
+    text=[f"₹{v:,.0f}" for v in df['realized_if_tsl_hit']], textposition="outside"
+))
+fig3.update_layout(
+    barmode='group',
+    title="Open Risk vs Realized if TSL Hit (per Stock)",
+    yaxis_title="₹ Value"
+)
+st.plotly_chart(fig3, use_container_width=True)
+
+
 # summary
 total_invested = df['invested_value'].sum()
 total_current = df['current_value'].sum()
