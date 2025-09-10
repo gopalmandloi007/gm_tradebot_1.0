@@ -179,8 +179,10 @@ try:
         st.info('✅ No holdings found.')
         st.stop()
 
+    # ------------------ FIXED: robust parsing and aggregation ------------------
     rows = []
     for item in holdings:
+        # Defensive numeric parsing
         try:
             avg_buy_price = float(item.get('avg_buy_price') or 0)
         except Exception:
@@ -198,37 +200,82 @@ try:
         except Exception:
             holding_used = 0.0
 
-        total_qty = int(dp_qty + t1_qty + holding_used)
-        tradings = item.get('tradingsymbol') or []
-        if isinstance(tradings, dict):
-            tradings = [tradings]
+        # total quantity for this holding record (may be 0)
+        total_qty = int(round(dp_qty + t1_qty + holding_used))
+
+        # get the raw tradingsymbols field (APIs vary)
+        tradings = item.get('tradingsymbol') if 'tradingsymbol' in item else item.get('tradings') or item.get('tradingsymbol')
+        # Normalize possible None to empty
+        if tradings is None:
+            tradings = []
+
+        symbols = []  # will hold dicts: {'symbol': str, 'token': token_str}
+        # 1) single string (common case)
         if isinstance(tradings, str):
+            symbols = [{'symbol': tradings, 'token': item.get('token')}]
+        # 2) a dict (single structured entry)
+        elif isinstance(tradings, dict):
+            sym_str = tradings.get('tradingsymbol') or tradings.get('symbol') or item.get('tradingsymbol')
+            symbols = [{'symbol': sym_str, 'token': tradings.get('token') or item.get('token')}]
+        # 3) list/tuple (could contain strings or dicts)
+        elif isinstance(tradings, (list, tuple)):
+            for sym in tradings:
+                if isinstance(sym, dict):
+                    sym_str = sym.get('tradingsymbol') or sym.get('symbol') or item.get('tradingsymbol')
+                    token_sym = sym.get('token') or item.get('token')
+                else:
+                    # If element is a plain string, use it directly (fixes duplication bug)
+                    sym_str = str(sym) if sym is not None else item.get('tradingsymbol')
+                    token_sym = item.get('token')
+                if sym_str:
+                    symbols.append({'symbol': sym_str, 'token': token_sym})
+        else:
+            # fallback: use item-level field if present
+            if item.get('tradingsymbol'):
+                symbols = [{'symbol': item.get('tradingsymbol'), 'token': item.get('token')}]
+
+        # If we couldn't detect symbol(s) skip this record
+        if not symbols:
+            continue
+
+        # Add one row per symbol entry. quantity for this record is total_qty.
+        for s in symbols:
             rows.append({
-                'symbol': tradings,
-                'token': item.get('token'),
+                'symbol': s['symbol'],
+                'token': s.get('token') or item.get('token'),
                 'avg_buy_price': avg_buy_price,
                 'quantity': total_qty,
                 'product_type': item.get('product_type', '')
             })
-        else:
-            for sym in tradings:
-                sym_obj = sym if isinstance(sym, dict) else {}
-                sym_exchange = sym_obj.get('exchange') if isinstance(sym_obj, dict) else None
-                if sym_exchange and sym_exchange != 'NSE':
-                    continue
-                rows.append({
-                    'symbol': sym_obj.get('tradingsymbol') or sym_obj.get('symbol') or item.get('tradingsymbol'),
-                    'token': sym_obj.get('token') or item.get('token'),
-                    'avg_buy_price': avg_buy_price,
-                    'quantity': total_qty,
-                    'product_type': item.get('product_type', '')
-                })
 
     if not rows:
         st.warning('⚠️ No NSE holdings found.')
         st.stop()
 
-    df = pd.DataFrame(rows).dropna(subset=['symbol']).reset_index(drop=True)
+    _raw_df = pd.DataFrame(rows).dropna(subset=['symbol']).reset_index(drop=True)
+
+    # Aggregate by symbol+token to avoid duplicate rows (sum quantity and weighted avg of avg_buy_price)
+    def _agg_group(g):
+        qty_sum = int(g['quantity'].sum())
+        if qty_sum > 0:
+            weighted_avg = float((g['avg_buy_price'] * g['quantity']).sum() / g['quantity'].sum())
+        else:
+            weighted_avg = float(g['avg_buy_price'].mean() if len(g) > 0 else 0.0)
+        return pd.Series({
+            'quantity': qty_sum,
+            'avg_buy_price': weighted_avg,
+            'product_type': g['product_type'].iloc[0] if 'product_type' in g.columns else ''
+        })
+
+    grouped = _raw_df.groupby(['symbol', 'token'], dropna=False).apply(_agg_group).reset_index()
+
+    df = grouped[['symbol', 'token', 'avg_buy_price', 'quantity', 'product_type']].copy()
+
+    # Ensure numeric types
+    df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0).astype(int)
+    df['avg_buy_price'] = pd.to_numeric(df['avg_buy_price'], errors='coerce').fillna(0.0)
+
+    # ------------------ END FIXED PARSING ------------------
 
     # Fetch LTP + previous close
     st.info('Fetching live prices and previous close (robust logic).')
@@ -308,7 +355,6 @@ try:
                     prev_close = None
                     prev_source = 'no_hist'
             except Exception as exc:
-                # Do NOT attempt to unpack parse return values elsewhere — earlier code wrongly did "hist_df, err = ..." causing unpack errors.
                 prev_close = None
                 prev_source = f'fallback_error:{str(exc)[:120]}'
 
