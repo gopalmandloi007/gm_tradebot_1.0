@@ -42,7 +42,7 @@ def compute_tsl(avg, ltp, qty):
     try:
         if pd.isna(avg) or pd.isna(ltp) or qty == 0:
             return np.nan
-        if qty > 0:
+        if qty > 0:  # Long
             gain_pct = (ltp / avg - 1.0) * 100.0
             if gain_pct > 40:
                 return avg * 1.30
@@ -53,7 +53,7 @@ def compute_tsl(avg, ltp, qty):
             if gain_pct > 10:
                 return avg * 1.00
             return avg * 0.98
-        else:
+        else:  # Short
             drop_pct = (avg - ltp) / avg * 100.0
             if drop_pct > 40:
                 return avg * 0.70
@@ -140,90 +140,77 @@ try:
     df["profit_if_tsl"] = (df["tsl"] - df["avg_price"]) * df["qty"]
     df["loss_if_tsl_from_current"] = (df["ltp"] - df["tsl"]) * df["qty"]
 
-    # Display dataframe
-    df_display = df[[
-        "symbol", "exchange", "product", "qty", "avg_price", "ltp",
-        "invested_value", "current_value", "unrealized_pnl", "unrealized_pct",
-        "capital_alloc_pct", "initial_sl", "tsl", "profit_if_tsl", "loss_if_tsl_from_current",
-        "target_10", "target_20", "target_30", "target_40"
-    ]].copy()
+    # Side classification
+    df["side"] = np.where(df["qty"] > 0, "Long", "Short")
 
-    # Format
-    money_cols = ["avg_price", "ltp", "invested_value", "current_value", "unrealized_pnl",
-                  "initial_sl", "tsl", "profit_if_tsl", "loss_if_tsl_from_current",
-                  "target_10", "target_20", "target_30", "target_40"]
-    for c in money_cols:
-        df_display[c] = pd.to_numeric(df_display[c], errors="coerce").round(2)
-    df_display["unrealized_pct"] = df_display["unrealized_pct"].round(2)
-    df_display["capital_alloc_pct"] = df_display["capital_alloc_pct"].round(2)
+    # ---------- Summary Function ----------
+    def portfolio_summary_section(df_side, title, cash_in_hand):
+        if df_side.empty:
+            st.subheader(title)
+            st.info("No positions in this side.")
+            return
 
-    # ---------- Summary KPIs ----------
-    total_invested = df_display["invested_value"].sum()
-    total_current = df_display["current_value"].sum()
-    total_unrealized = df_display["unrealized_pnl"].sum()
+        invested = df_side['invested_value'].sum()
+        current = df_side['current_value'].sum()
+        unrealized_pnl = df_side['unrealized_pnl'].sum()
+        tsl_hit_pnl = df_side['profit_if_tsl'].sum()
+
+        st.subheader(title)
+        col1, col2, col3, col4, col5 = st.columns(5)
+        with col1:
+            st.metric("💰 Total Invested", f"₹{invested:,.2f}")
+        with col2:
+            st.metric("📈 Current Value", f"₹{current:,.2f}")
+        with col3:
+            st.metric("📊 Unrealized P&L", f"₹{unrealized_pnl:,.2f}")
+        with col4:
+            st.metric("🛑 P&L if all TSL hit", f"₹{tsl_hit_pnl:,.2f}")
+        with col5:
+            st.metric("💵 Cash in Hand", f"₹{cash_in_hand:,.2f}")
+
+        # Risk chart
+        st.subheader("📉 Open Risk vs TSL Risk")
+        risk_data = pd.DataFrame({
+            "Risk Type": ["Unrealized P&L (now)", "P&L if all TSL hit"],
+            "Value": [unrealized_pnl, tsl_hit_pnl]
+        })
+        st.bar_chart(risk_data.set_index("Risk Type"))
+
+        # Detailed table
+        st.subheader("📋 Detailed Positions")
+        st.dataframe(df_side[[
+            "symbol","qty","avg_price","ltp",
+            "invested_value","current_value","unrealized_pnl","unrealized_pct",
+            "initial_sl","tsl","profit_if_tsl","loss_if_tsl_from_current",
+            "target_10","target_20","target_30","target_40"
+        ]].sort_values("invested_value", ascending=False).reset_index(drop=True),
+        use_container_width=True)
+
+    # ---------- Cash in hand ----------
+    cash_in_hand_total = DEFAULT_TOTAL_CAPITAL - df["invested_value"].sum()
+
+    # 📈 Long Section
+    df_long = df[df["side"] == "Long"]
+    portfolio_summary_section(df_long, "📈 Long Positions — Definedge (Risk + TSL analysis)", cash_in_hand_total)
+
+    # 📉 Short Section
+    df_short = df[df["side"] == "Short"]
+    portfolio_summary_section(df_short, "📉 Short Positions — Definedge (Risk + TSL analysis)", cash_in_hand_total)
+
+    # 🏁 Net Portfolio Summary
+    st.subheader("🏁 Net Portfolio Summary")
+    total_invested = df["invested_value"].sum()
+    total_current = df["current_value"].sum()
+    total_unrealized = df["unrealized_pnl"].sum()
+    total_tsl_hit = df["profit_if_tsl"].sum()
     cash_left = DEFAULT_TOTAL_CAPITAL - total_invested
-    total_profit_if_all_tsl = df_display["profit_if_tsl"].sum()
 
-    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-    kpi1.metric("💰 Total Invested", f"₹{total_invested:,.2f}")
-    kpi2.metric("📈 Current Value", f"₹{total_current:,.2f}")
-    kpi3.metric("📊 Unrealized P&L", f"₹{total_unrealized:,.2f}")
-    kpi4.metric("🛑 P&L if all TSL hit", f"₹{total_profit_if_all_tsl:,.2f}")
-    kpi5.metric("💵 Cash in Hand", f"₹{cash_left:,.2f}")
-
-    # ---------- Risk Bar Chart ----------
-    st.subheader("📉 Open Risk vs TSL Risk")
-    risk_df = pd.DataFrame({
-        "Metric": ["Unrealized P&L (now)", "P&L if all TSL hit"],
-        "Value": [total_unrealized, total_profit_if_all_tsl]
-    })
-    fig_bar = go.Figure(data=[go.Bar(
-        x=risk_df["Metric"],
-        y=risk_df["Value"],
-        text=risk_df["Value"].apply(lambda v: f"₹{v:,.0f}"),
-        textposition="auto"
-    )])
-    fig_bar.update_layout(yaxis_title="P&L (₹)")
-    st.plotly_chart(fig_bar, use_container_width=True)
-
-    # ---------- Table ----------
-    st.subheader("📋 Positions Table (Detailed with Targets & SLs)")
-    st.dataframe(df_display.sort_values("invested_value", ascending=False).reset_index(drop=True), use_container_width=True)
-
-    # ---------- Downloads ----------
-    csv_bytes = df_display.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Download Positions CSV", csv_bytes, file_name="positions_with_risk.csv", mime="text/csv")
-    st.download_button("⬇️ Download Positions JSON", df_display.to_json(orient="records"), file_name="positions.json", mime="application/json")
-
-    # ---------- Manual Square-off ----------
-    st.subheader("🛠️ Manual Square-off")
-    with st.form("manual_squareoff"):
-        sq_symbol = st.text_input("Enter Trading Symbol")
-        sq_exchange = st.selectbox("Exchange", ["NSE", "BSE", "NFO"])
-        sq_qty = st.text_input("Quantity to Square-off")
-        submitted = st.form_submit_button("Square-off")
-
-        if submitted:
-            if not sq_symbol or not sq_qty:
-                st.error("Provide symbol and quantity.")
-            else:
-                try:
-                    payload = {
-                        "exchange": sq_exchange,
-                        "tradingsymbol": sq_symbol,
-                        "quantity": int(sq_qty),
-                        "product_type": "INTRADAY",
-                    }
-                    resp_square = client.square_off_position(payload)
-                    st.write("🔎 Square-off API Response:", resp_square)
-                    if resp_square and resp_square.get("status") == "SUCCESS":
-                        st.success(f"Position {sq_symbol} squared-off successfully ✅")
-                        st.rerun()
-                    else:
-                        st.error(f"Square-off failed: {resp_square}")
-                except Exception as e:
-                    st.error(f"Square-off failed: {e}")
-                    st.text(traceback.format_exc())
+    colA, colB, colC, colD, colE = st.columns(5)
+    colA.metric("💰 Total Invested", f"₹{total_invested:,.2f}")
+    colB.metric("📈 Current Value", f"₹{total_current:,.2f}")
+    colC.metric("📊 Unrealized P&L", f"₹{total_unrealized:,.2f}")
+    colD.metric("🛑 P&L if all TSL hit", f"₹{total_tsl_hit:,.2f}")
+    colE.metric("💵 Cash in Hand", f"₹{cash_left:,.2f}")
 
 except Exception as e:
     st.error(f"Fetching positions failed: {e}")
