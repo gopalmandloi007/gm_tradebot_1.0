@@ -362,19 +362,21 @@ st.subheader("📊 Portfolio Holdings")
 st.dataframe(df[['symbol','quantity','avg_buy_price','ltp','prev_close','pct_change','invested_value','current_value','overall_pnl','today_pnL','side','initial_sl_price','tsl_price','targets','initial_risk','open_risk','realized_if_tsl_hit']], use_container_width=True)
 
 # ---------- Summary Metrics ----------
+# compute totals before using
+total_invested = df['invested_value'].sum()
+total_current = df['current_value'].sum()
+total_pnl = total_current - total_invested
+cash_in_hand = capital - total_invested
+total_today_pnl = df['today_pnL'].sum()
+
 st.subheader("📌 Portfolio Summary")
 
-colA, colB, colC, colD, colE = st.columns(5)
-with colA:
-    st.metric("💰 Total Invested", f"₹{total_invested:,.2f}")
-with colB:
-    st.metric("📈 Current Value", f"₹{total_current:,.2f}")
-with colC:
-    st.metric("📊 Total PnL", f"₹{total_pnl:,.2f}")
-with colD:
-    st.metric("📅 Today's PnL", f"₹{total_today_pnl:,.2f}")
-with colE:
-    st.metric("💵 Cash in Hand", f"₹{cash_in_hand:,.2f}")
+# arrange vertically (column wise instead of row)
+st.metric("💰 Total Invested", f"₹{total_invested:,.2f}")
+st.metric("📈 Current Value", f"₹{total_current:,.2f}")
+st.metric("📊 Total PnL", f"₹{total_pnl:,.2f}")
+st.metric("📅 Today's PnL", f"₹{total_today_pnl:,.2f}")
+st.metric("💵 Cash in Hand", f"₹{cash_in_hand:,.2f}")
 
 # Portfolio Max Loss if all SL/TSL hit
 portfolio_max_loss = df['open_risk'].sum()
@@ -385,12 +387,22 @@ col1, col2 = st.columns(2)
 
 # Pie charts
 with col1:
-    fig1 = go.Figure(data=[go.Pie(labels=df['symbol'], values=df['invested_value'], textinfo='label+percent', hole=0.3)])
+    fig1 = go.Figure(data=[go.Pie(
+        labels=df['symbol'],
+        values=df['invested_value'],
+        textinfo='label+percent',
+        hole=0.3
+    )])
     fig1.update_layout(title="Portfolio Allocation — Invested Value per Stock")
     st.plotly_chart(fig1, use_container_width=True)
 
 with col2:
-    fig2 = go.Figure(data=[go.Pie(labels=['Invested','Cash in Hand'], values=[total_invested, cash_in_hand], textinfo='label+percent', hole=0.3)])
+    fig2 = go.Figure(data=[go.Pie(
+        labels=['Invested','Cash in Hand'],
+        values=[total_invested, cash_in_hand],
+        textinfo='label+percent',
+        hole=0.3
+    )])
     fig2.update_traces(marker=dict(colors=['blue','green']))
     fig2.update_layout(title="Portfolio vs Cash Distribution")
     st.plotly_chart(fig2, use_container_width=True)
@@ -415,30 +427,3 @@ fig3.update_layout(
     yaxis_title="₹ Value"
 )
 st.plotly_chart(fig3, use_container_width=True)
-
-
-# summary
-total_invested = df['invested_value'].sum()
-total_current = df['current_value'].sum()
-total_pnl = total_current - total_invested
-cash_in_hand = capital - total_invested
-total_today_pnl = df['today_pnL'].sum()
-st.metric("💰 Total Invested", f"₹{total_invested:,.2f}")
-st.metric("📈 Current Value", f"₹{total_current:,.2f}")
-st.metric("📊 Total PnL", f"₹{total_pnl:,.2f}")
-st.metric("📅 Today's PnL", f"₹{total_today_pnl:,.2f}")
-st.metric("💵 Cash in Hand", f"₹{cash_in_hand:,.2f}")
-
-# Pie charts side-by-side
-col1, col2 = st.columns(2)
-
-with col1:
-    fig1 = go.Figure(data=[go.Pie(labels=df['symbol'], values=df['invested_value'], textinfo='label+percent', hole=0.3)])
-    fig1.update_layout(title="Portfolio Allocation — Invested Value per Stock")
-    st.plotly_chart(fig1, use_container_width=True)
-
-with col2:
-    fig2 = go.Figure(data=[go.Pie(labels=['Invested','Cash in Hand'], values=[total_invested, cash_in_hand], textinfo='label+percent', hole=0.3)])
-    fig2.update_traces(marker=dict(colors=['blue','green']))
-    fig2.update_layout(title="Portfolio vs Cash Distribution")
-    st.plotly_chart(fig2, use_container_width=True)
