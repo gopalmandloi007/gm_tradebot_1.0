@@ -1,8 +1,37 @@
-# ------------------ DEBUG MODE: Inspect raw API response ------------------
+import streamlit as st
+import pandas as pd
+import requests
 import json
+import traceback
 
-st.subheader("🔎 Raw Holdings Response (first 2 items)")
-st.text(json.dumps(holdings[:2], indent=2))
+st.set_page_config(layout="wide")
+st.title("📊 NSE Holdings Dashboard — Debug Mode")
+
+# -------------------- API call --------------------
+def fetch_holdings():
+    try:
+        url = "https://api.kite.trade/portfolio/holdings"  # example endpoint
+        headers = {"Authorization": "token your_api_key:your_access_token"}
+        resp = requests.get(url, headers=headers)
+        if resp.status_code != 200:
+            st.error(f"❌ API error {resp.status_code}: {resp.text}")
+            return []
+        data = resp.json()
+        return data.get("data", [])
+    except Exception as e:
+        st.error(f"⚠️ Exception while fetching holdings: {e}")
+        st.text(traceback.format_exc())
+        return []
+
+# Fetch holdings first
+holdings = fetch_holdings()
+
+# ------------------ DEBUG MODE: Inspect raw API response ------------------
+if holdings:
+    st.subheader("🔎 Raw Holdings Response (first 2 items)")
+    st.text(json.dumps(holdings[:2], indent=2))
+else:
+    st.warning("⚠️ No holdings returned from API.")
 
 # ------------------ Convert API to rows (no aggregation yet) ------------------
 rows = []
@@ -43,5 +72,15 @@ for item in holdings:
         })
 
 df_debug = pd.DataFrame(rows)
+
 st.subheader("📝 Parsed Rows (before aggregation)")
 st.dataframe(df_debug)
+
+# Optional: allow CSV download of raw parsed rows
+if not df_debug.empty:
+    st.download_button(
+        "⬇️ Download Parsed Rows (CSV)",
+        data=df_debug.to_csv(index=False),
+        file_name="parsed_holdings_debug.csv",
+        mime="text/csv"
+    )
