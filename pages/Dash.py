@@ -309,14 +309,6 @@ except Exception as e:
     st.text(traceback.format_exc())
     st.stop()
 
-# show sample hist if available
-try:
-    if 'last_hist_df' in locals() and last_hist_df is not None and last_hist_df.shape[0] > 0:
-        st.write('Historical data sample (last fetched symbol):')
-        st.dataframe(last_hist_df.head())
-except Exception:
-    pass
-
 # assign LTP and prev_close
 df['ltp'] = pd.to_numeric(pd.Series(ltp_list), errors='coerce').fillna(0.0)
 _df_prev = pd.to_numeric(pd.Series(prev_close_list), errors='coerce')
