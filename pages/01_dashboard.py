@@ -363,24 +363,44 @@ st.dataframe(df[['symbol','quantity','avg_buy_price','ltp','prev_close','pct_cha
 
 # ---------- Summary Metrics ----------
 # compute totals before using
+# ---------- Summary Metrics ----------
+st.subheader("📌 Portfolio Summary")
+
+# compute portfolio aggregates
 total_invested = df['invested_value'].sum()
 total_current = df['current_value'].sum()
 total_pnl = total_current - total_invested
 cash_in_hand = capital - total_invested
 total_today_pnl = df['today_pnL'].sum()
 
-st.subheader("📌 Portfolio Summary")
+# display in 5 vertical columns
+colA, colB, colC, colD, colE = st.columns(5)
+with colA:
+    st.metric("💰 Total Invested", f"₹{total_invested:,.2f}")
+with colB:
+    st.metric("📈 Current Value", f"₹{total_current:,.2f}")
+with colC:
+    st.metric("📊 Total PnL", f"₹{total_pnl:,.2f}")
+with colD:
+    st.metric("📅 Today's PnL", f"₹{total_today_pnl:,.2f}")
+with colE:
+    st.metric("💵 Cash in Hand", f"₹{cash_in_hand:,.2f}")
 
-# arrange vertically (column wise instead of row)
-st.metric("💰 Total Invested", f"₹{total_invested:,.2f}")
-st.metric("📈 Current Value", f"₹{total_current:,.2f}")
-st.metric("📊 Total PnL", f"₹{total_pnl:,.2f}")
-st.metric("📅 Today's PnL", f"₹{total_today_pnl:,.2f}")
-st.metric("💵 Cash in Hand", f"₹{cash_in_hand:,.2f}")
+# ---------- Portfolio Holdings ----------
+st.subheader("📊 Portfolio Holdings")
 
-# Portfolio Max Loss if all SL/TSL hit
-portfolio_max_loss = df['open_risk'].sum()
-st.error(f"⚠️ Max Loss if all SL/TSL Hit: ₹{portfolio_max_loss:,.2f}")
+# expand targets list into separate T1, T2, T3... columns
+max_targets = max(df['targets'].apply(len))
+for i in range(max_targets):
+    df[f"T{i+1}"] = df['targets'].apply(lambda x: x[i] if i < len(x) else None)
+
+holdings_cols = [
+    'symbol', 'quantity', 'avg_buy_price', 'ltp', 'prev_close', 'pct_change',
+    'invested_value', 'current_value', 'overall_pnl', 'today_pnL',
+    'side', 'initial_sl_price', 'tsl_price', 'initial_risk', 'open_risk', 'realized_if_tsl_hit'
+] + [f"T{i+1}" for i in range(max_targets)]
+
+st.dataframe(df[holdings_cols], use_container_width=True)
 
 # ---------- Charts ----------
 col1, col2 = st.columns(2)
