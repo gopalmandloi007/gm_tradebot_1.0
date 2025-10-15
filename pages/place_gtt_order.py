@@ -51,17 +51,17 @@ with col_left:
 
             exchange = st.selectbox("Exchange", ["NSE", "BSE", "NFO", "MCX"], index=0)
             tradingsymbol = st.text_input("Trading Symbol (example: TCS-EQ)").strip().upper()
-            condition = st.selectbox("Condition", ["LTP_ABOVE", "LTP_BELOW"], index=0)
+            condition = st.selectbox("Condition", ["LTP_ABOVE", "LTP_BELOW"], index=1)
 
             c1, c2 = st.columns(2)
             with c1:
                 alert_price = st.number_input("Alert Price (trigger)", min_value=0.0, format="%.2f", step=0.05, value=0.0)
                 quantity = st.number_input("Quantity", min_value=1, step=1, value=1)
             with c2:
-                order_type = st.selectbox("Order Type", ["BUY", "SELL"])
+                order_type = st.selectbox("Order Type", ["SELL", "BUY"], index=0)
                 price = st.number_input("Order Price (price to place order)", min_value=0.0, format="%.2f", step=0.05, value=0.0)
 
-            product_type = st.selectbox("Product Type (optional)", ["", "CNC", "INTRADAY", "NORMAL"], index=0)
+            product_type = st.selectbox("Product Type (optional)", ["CNC", "INTRADAY", "NORMAL"], index=0)
             remarks = st.text_input("Remarks (optional)")
 
             submit_gtt = st.form_submit_button("Preview GTT Payload")
