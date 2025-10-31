@@ -45,6 +45,7 @@ st.markdown("""
         <li class='notes-list'>📈 <b>More closes above the 9 EMA recently</b></li>
         <li class='notes-list'>🕰️ <b>Higher time frame positions near area for confluence</b></li>
         <li class='notes-list'>📈 <b>9 EMA rising count should be higher or increasing</b></li>
+        <li class='notes-list'>📈 <b>Tight Close near 9 EMA/ 10 EMA/ 20 EMA</b></li>
     </ul>
 </div>
 """, unsafe_allow_html=True)
