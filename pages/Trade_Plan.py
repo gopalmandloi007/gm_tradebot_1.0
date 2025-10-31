@@ -3,12 +3,13 @@ import json
 import random
 from fpdf import FPDF
 from datetime import date
+from streamlit_extras.switch_page_button import switch_page
 
-# --- THEME & COLOR ---
+# ---- THEME & COLOR ----
 theme_colors = {
-    "Blue-Green": {"primary": "#3B82F6", "secondary": "#16A34A", "accent": "#F59E42", "bg": "#E0F2FE"},
-    "Purple-Orange": {"primary": "#A21CAF", "secondary": "#F59E42", "accent": "#F43F5E", "bg": "#FFF7ED"},
-    "Classic": {"primary": "#374151", "secondary": "#FBBF24", "accent": "#6366F1", "bg": "#F3F4F6"}
+    "Blue-Green": {"primary": "#3B82F6", "secondary": "#16A34A", "accent": "#F59E42"},
+    "Purple-Orange": {"primary": "#A21CAF", "secondary": "#F59E42", "accent": "#F43F5E"},
+    "Classic": {"primary": "#374151", "secondary": "#FBBF24", "accent": "#6366F1"}
 }
 
 if "theme" not in st.session_state:
@@ -21,11 +22,6 @@ theme_choice = st.sidebar.selectbox("Color Theme", list(theme_colors.keys()), in
 st.session_state["theme"] = theme_choice
 dark_mode = st.sidebar.toggle("🌑 Dark Mode", value=st.session_state["dark_mode"])
 st.session_state["dark_mode"] = dark_mode
-
-primary = theme_colors[theme_choice]['primary']
-secondary = theme_colors[theme_choice]['secondary']
-accent = theme_colors[theme_choice]['accent']
-bg = theme_colors[theme_choice]['bg']
 
 # ---- MOTIVATION WIDGET ----
 punchlines = [
@@ -41,11 +37,8 @@ punchlines = [
     "Trading ka asli hero wo nahi jo profit kare, wo hai jo calm rahe."
 ]
 quote_of_the_day = random.choice(punchlines)
-st.markdown(f"""
-<div style='background:{accent}; border-radius:18px; padding:10px; text-align:center; margin-bottom:12px;'>
-    <span style='font-size:1.3em;color:white;'>🗣️ <b>Motivation Today:</b> "{quote_of_the_day}"</span>
-</div>
-""", unsafe_allow_html=True)
+with st.container():
+    st.markdown(f"<div style='background:{theme_colors[theme_choice]['accent']}; border-radius:14px; padding:8px; text-align:center;'><span style='font-size:1.2em;color:white;'>🗣️ <b>Motivation Today:</b> {quote_of_the_day}</span></div>", unsafe_allow_html=True)
 
 # ---- UPLOAD / DOWNLOAD ----
 st.sidebar.header("📥 Upload / 📤 Download Plan")
@@ -85,7 +78,8 @@ if st.sidebar.button("Download as PDF"):
     else:
         st.sidebar.warning("Please fill out your plan first.")
 
-st.sidebar.header("💾 Save/Load Settings")
+# ---- USER INPUTS ----
+st.sidebar.header("🔧 Modify Your Plan")
 def default_plan():
     return {
         "Total Capital": 1112000,
@@ -100,14 +94,13 @@ total_capital = st.sidebar.number_input("Total Capital (₹)", min_value=10000, 
 win_rate = st.sidebar.slider("Win Rate (%)", min_value=10, max_value=100, value=st.session_state["plan"]["Win Rate (%)"], step=1)
 holding_win = st.sidebar.number_input("Avg Day Holding (Win)", min_value=1, value=st.session_state["plan"]["Avg Day Holding (Win)"], step=1)
 holding_loss = st.sidebar.number_input("Avg Day Holding (Loss)", min_value=1, value=st.session_state["plan"]["Avg Day Holding (Loss)"], step=1)
+
 st.session_state["plan"] = {
     "Total Capital": total_capital,
     "Win Rate (%)": win_rate,
     "Avg Day Holding (Win)": holding_win,
     "Avg Day Holding (Loss)": holding_loss
 }
-settings_json = json.dumps(st.session_state["plan"], indent=2)
-st.sidebar.download_button("Save Settings as JSON", data=settings_json, file_name="TradingPlanSettings.json", mime="application/json")
 
 # ---- CALCULATIONS ----
 win_rate_dec = win_rate / 100
@@ -125,93 +118,62 @@ time_needed_days = trades_needed * et_per_trade if et_per_trade > 0 else 0
 lossing_trades_caution = max_drawdown / risk_per_trade if risk_per_trade > 0 else 0
 initial_trade_capital = position_size
 
-# ---- FIT TO WINDOW & ATTRACTIVE INFO ----
-st.markdown(f"""
-<style>
-    .stApp {{
-        background-color: {bg} !important;
-    }}
-    .info-card {{
-        background: linear-gradient(90deg, {primary}20 0%, {secondary}30 100%);
-        border-radius: 18px;
-        padding: 16px 24px 16px 24px;
-        margin-bottom: 18px;
-        box-shadow: 2px 2px 10px 0px #00000018;
-    }}
-    .risk-card {{
-        background: linear-gradient(90deg, {accent}40 0%, #fff 100%);
-        border-radius: 18px;
-        padding: 16px 24px 16px 24px;
-        margin-bottom: 18px;
-        box-shadow: 2px 2px 10px 0px #00000018;
-    }}
-    .stage-card {{
-        background: linear-gradient(90deg, {primary}20 0%, {accent}20 100%);
-        border-radius: 18px;
-        padding: 16px 24px;
-        margin-bottom: 18px;
-        box-shadow: 2px 2px 10px 0px #00000018;
-    }}
-</style>
-""", unsafe_allow_html=True)
+# ---- PAGE MAIN ----
+primary = theme_colors[theme_choice]['primary']
+secondary = theme_colors[theme_choice]['secondary']
+accent = theme_colors[theme_choice]['accent']
 
-# ---- MAIN PAGE ----
 st.markdown(f"<h1 style='text-align:center; color:{primary};'>📈 Trading Plan</h1>", unsafe_allow_html=True)
 st.markdown("---")
 
+# ---- CAPITAL & RISK ----
+st.markdown(f"### 💰 <span style='color:{secondary};'>Capital & Risk Management</span>", unsafe_allow_html=True)
+col1, col2, col3 = st.columns([2,2,2])
+col1.metric("Total Capital", f"₹{total_capital:,.0f}")
+col2.metric("Position Size", f"₹{position_size:,.0f}")
+col3.metric("Risk per Trade (2%)", f"₹{risk_per_trade:,.0f}")
+col1.metric("Risk of Capital (0.5%)", f"₹{risk_of_total_capital:,.0f}")
+col2.metric("Reward per Win", f"₹{reward_per_win:,.0f}")
+col3.metric("Win Rate", f"{win_rate}%")
+col1.metric("Target Profit (50% Yearly)", f"₹{target_profit_yearly:,.0f}")
+col2.metric("Target Time", f"{target_time_days} Days")
+col3.metric("Max Drawdown (5%)", f"₹{max_drawdown:,.0f}")
+col1.metric("Expected Value/Trade", f"₹{ev_per_trade:,.1f}")
+col2.metric("Trades Needed for Target", f"{trades_needed:,.0f}")
+col3.metric("Initial Trade Capital", f"₹{initial_trade_capital:,.0f}")
+
+# ---- TRADE FREQUENCY ----
+st.markdown(f"### 📊 <span style='color:{accent};'>Trade Frequency & Timing</span>", unsafe_allow_html=True)
+col4, col5, col6 = st.columns([2,2,2])
+col4.metric("Avg Day Holding (Win)", f"{holding_win}")
+col5.metric("Avg Day Holding (Loss)", f"{holding_loss}")
+col6.metric("ET per Trade", f"{et_per_trade:.1f}")
+col4.metric("Time Needed for Target", f"{time_needed_days:,.0f} Days")
+col5.metric("Lossing Trades Caution", f"{lossing_trades_caution:,.0f}")
+col6.metric("Max Drawdown", f"₹{max_drawdown:,.0f}")
+
+st.markdown("---")
+
+# ---- STRATEGY PROGRESSION ----
+st.markdown(f"### 🚀 <span style='color:{primary};'>Strategy Progression & Scaling</span>", unsafe_allow_html=True)
 st.markdown(f"""
-<div class='info-card'>
-    <h3 style='color:{secondary};'><span style='font-size:1.3em;'>💰 Capital & Risk Management</span></h3>
-    <b>Total Capital:</b> <span style='color:{primary};'>₹{total_capital:,.0f}</span> &nbsp;|&nbsp;
-    <b>Position Size:</b> <span style='color:{secondary};'>₹{position_size:,.0f}</span> &nbsp;|&nbsp;
-    <b>Risk per Trade (2%):</b> <span style='color:#F43F5E;'>₹{risk_per_trade:,.0f}</span> &nbsp;|&nbsp;
-    <b>Reward per Win:</b> <span style='color:{secondary};'>₹{reward_per_win:,.0f}</span> &nbsp;|&nbsp;
-    <b>Win Rate:</b> <span style='color:{primary};'>{win_rate}%</span>
-    <br>
-    <b>Target Profit (50% Yearly):</b> ₹{target_profit_yearly:,.0f} &nbsp;|&nbsp;
-    <b>Trades Needed for Target:</b> {trades_needed:,.0f} &nbsp;|&nbsp;
-    <b>Expected Value/Trade:</b> ₹{ev_per_trade:,.1f}
-    <br>
-    <b>Drawdown Allowed (5%):</b> ₹{max_drawdown:,.0f} &nbsp;|&nbsp;
-    <b>Lossing Trades Caution:</b> {lossing_trades_caution:,.0f}
-</div>
+- <span style='color:{primary}; font-weight:bold;'>Stage I:</span> Initial Trade Capital — 10% to 20% for Testing <br>
+- <span style='color:{secondary}; font-weight:bold;'>Stage II:</span> Profitable Trades Confidence After 1 Trade — 30% to 50% Risk Financed <br>
+- <span style='color:{secondary}; font-weight:bold;'>Stage III:</span> Profitable Trades Confidence After 8-10 Trades — 100% Fully Financed <br>
+- <span style='color:{accent}; font-weight:bold;'>Stage IV:</span> Profitable Trades Confidence After 10 Trades — 100% + Increased Position Size (Compounding)
 """, unsafe_allow_html=True)
 
-st.markdown(f"""
-<div class='info-card'>
-    <h3 style='color:{accent};'><span style='font-size:1.3em;'>📊 Trade Frequency & Timing</span></h3>
-    <b>Avg Day Holding (Win):</b> <span style='color:{secondary};'>{holding_win}</span> days &nbsp;|&nbsp;
-    <b>Avg Day Holding (Loss):</b> <span style='color:#F43F5E;'>{holding_loss}</span> days &nbsp;|&nbsp;
-    <b>ET per Trade:</b> <span style='color:{primary};'>{et_per_trade:.1f}</span> days
-    <br>
-    <b>Time Needed for Target:</b> <span style='color:{accent};'>{time_needed_days:,.0f}</span> days
-</div>
-""", unsafe_allow_html=True)
+st.markdown("---")
 
+# ---- RISK MANAGEMENT ----
+st.markdown(f"### ⚠️ <span style='color:{accent};'>Risk Management Rules</span>", unsafe_allow_html=True)
 st.markdown(f"""
-<div class='stage-card'>
-    <h3 style='color:{primary};'><span style='font-size:1.2em;'>🚀 Strategy Progression & Scaling</span></h3>
-    <ul>
-        <li><b>Stage I:</b> Initial Trade Capital — 10% to 20% for Testing</li>
-        <li><b>Stage II:</b> Profitable Trades Confidence After 1 Trade — 30% to 50% Risk Financed</li>
-        <li><b>Stage III:</b> Profitable Trades Confidence After 8-10 Trades — 100% Fully Financed</li>
-        <li><b>Stage IV:</b> Profitable Trades Confidence After 10 Trades — 100% + Increased Position Size (Compounding)</li>
-    </ul>
-</div>
-""", unsafe_allow_html=True)
-
-st.markdown(f"""
-<div class='risk-card'>
-    <h3 style='color:{accent};'><span style='font-size:1.2em;'>⚠️ Risk Management Rules</span></h3>
-    <ul>
-        <li><b>⏸️ Slow Down:</b> After 5 consecutive stop losses</li>
-        <li><b>🛑 Stop Trading for a Week:</b> After 10 consecutive stop losses</li>
-        <li><b>🛑 Stop Trading for a Month:</b> After 15 consecutive stop losses</li>
-        <li><b>🍵 Break Taken:</b> After 25 consecutive stop losses</li>
-        <li><b>🚀 Increase Position Size:</b> After 5 consecutive targets hit</li>
-        <li><b>❗ Losing Trades Caution:</b> Stop Trading after 25 back-to-back stop losses</li>
-    </ul>
-</div>
+- <span style='color:{accent};'>⏸️ <b>Slow Down:</b></span> After 5 consecutive stop losses <br>
+- <span style='color:#ef4444;'>🛑 <b>Stop Trading for a Week:</b></span> After 10 consecutive stop losses <br>
+- <span style='color:#ef4444;'>🛑 <b>Stop Trading for a Month:</b></span> After 15 consecutive stop losses <br>
+- <span style='color:#22d3ee;'>🍵 <b>Break Taken:</b></span> After 25 consecutive stop losses <br>
+- <span style='color:{secondary};'>🚀 <b>Increase Position Size:</b></span> After 5 consecutive targets hit <br>
+- <span style='color:#ef4444;'>❗ <b>Losing Trades Caution:</b></span> Stop Trading after 25 back-to-back stop losses <br>
 """, unsafe_allow_html=True)
 
 st.markdown("---")
@@ -289,6 +251,11 @@ for line in bonus_lines:
     st.markdown(f"<span style='font-size:1.1em;'>• {line}</span>", unsafe_allow_html=True)
 st.markdown("</div>", unsafe_allow_html=True)
 
+# ---- SAVE/LOAD BUTTONS ----
+st.sidebar.header("💾 Save/Load Settings")
+settings_json = json.dumps(st.session_state["plan"], indent=2)
+st.sidebar.download_button("Save Settings as JSON", data=settings_json, file_name="TradingPlanSettings.json", mime="application/json")
+
 st.markdown("---")
 st.markdown(f"<p style='text-align:center; color:{primary}; font-size:1.1em;'>Made with ❤️ for disciplined traders</p>", unsafe_allow_html=True)
 
@@ -298,7 +265,6 @@ if dark_mode:
         <style>
         .stApp { background-color: #23272f !important; }
         h1, h2, h3, h4, h5, h6, p, span, div { color: #e0e7ef !important; }
-        .info-card, .risk-card, .stage-card { background: #23272f !important; color: #e0e7ef !important;}
         .stMetric { background-color: #2d3748 !important; border-radius:10px; }
         </style>
     """, unsafe_allow_html=True)
