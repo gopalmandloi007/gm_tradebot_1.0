@@ -46,6 +46,10 @@ st.markdown("""
         <li class='notes-list'>🕰️ <b>Higher time frame positions near area for confluence</b></li>
         <li class='notes-list'>📈 <b>9 EMA rising count should be higher or increasing</b></li>
         <li class='notes-list'>📈 <b>Tight Close near 9 EMA/ 10 EMA/ 20 EMA</b></li>
+        <li class='notes-list'>📈 <b>Prior Strong rally at least 30% in 10 to 20 days</b></li>
+        <li class='notes-list'>💧 <b>Liquidity sweep external or internal and where price is want to go</b></li>
+        <li class='notes-list'>🚩 <b>Break or Shift market structure (BMC or SMC), More preference given to BMC</b></li>
+        <li class='notes-list'>📏 <b>Fibonacci level support</b></li>
     </ul>
 </div>
 """, unsafe_allow_html=True)
