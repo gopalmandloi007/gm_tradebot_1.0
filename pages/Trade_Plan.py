@@ -1,60 +1,83 @@
 import streamlit as st
 
-st.set_page_config(page_title="📈 Trading Plan", page_icon="💡", layout="wide")
+st.set_page_config(page_title="📈 Interactive Trading Plan", page_icon="💡", layout="wide")
 
-# -- TITLE & HEADER --
-st.markdown("<h1 style='text-align:center; color:#1e3a8a;'>📈 My Trading Plan</h1>", unsafe_allow_html=True)
+# ---- SIDEBAR FOR USER INPUTS ----
+st.sidebar.header("🔧 Modify Your Plan")
+
+total_capital = st.sidebar.number_input("Total Capital (₹)", min_value=10000, value=1112000, step=10000, help="Total trading capital")
+win_rate = st.sidebar.slider("Win Rate (Accuracy %)", min_value=10, max_value=100, value=35, step=1, help="Expected win rate as %")
+holding_win = st.sidebar.number_input("Avg Day Holding for Winning Trade", min_value=1, value=12, step=1)
+holding_loss = st.sidebar.number_input("Avg Day Holding for Losing Trade", min_value=1, value=4, step=1)
+
+# ---- CALCULATIONS ----
+win_rate_decimal = win_rate / 100
+position_size = total_capital * 0.1
+risk_per_trade = position_size * 0.02
+risk_of_total_capital = total_capital * 0.005
+reward_per_win = risk_per_trade * 5
+target_profit_yearly = total_capital * 0.5
+target_time_days = 365
+max_drawdown = total_capital * 0.05
+ev_per_trade = (win_rate_decimal * reward_per_win) - ((1 - win_rate_decimal) * risk_per_trade)
+trades_needed = target_profit_yearly / ev_per_trade if ev_per_trade != 0 else 0
+et_per_trade = (win_rate_decimal * holding_win) - ((1 - win_rate_decimal) * holding_loss)
+time_needed_days = trades_needed * et_per_trade if et_per_trade != 0 else 0
+lossing_trades_caution = max_drawdown / risk_per_trade if risk_per_trade != 0 else 0
+initial_trade_capital = position_size
+
+# ---- HEADER & IMAGE ----
+st.markdown("<h1 style='text-align:center; color:#1e3a8a;'>📈 Interactive Trading Plan</h1>", unsafe_allow_html=True)
 st.markdown("<div style='text-align:center;'><img src='https://cdn.pixabay.com/photo/2016/04/01/09/28/chart-1296046_1280.png' width='120'></div>", unsafe_allow_html=True)
 st.markdown("---")
 
-# -- CAPITAL & RISK MANAGEMENT --
+# ---- CAPITAL & RISK ----
 st.markdown("### 💰 <span style='color:#16a34a;'>Capital & Risk Management</span>", unsafe_allow_html=True)
-with st.container():
-    col1, col2, col3 = st.columns([2,2,2])
-    col1.metric("Total Capital", "₹1,112,000", "Trading capital")
-    col2.metric("Position Size", "₹111,200", "Per trade exposure")
-    col3.metric("Risk per Trade (2%)", "₹2,224", "Loss per trade")
-    col1.metric("Risk of Capital (0.5%)", "₹5,560", "Max loss per trade")
-    col2.metric("Reward per Win", "₹11,120", "Target profit per trade")
-    col3.metric("Win Rate (Accuracy)", "35%", "Based on system")
-    col1.metric("Target Profit (50%) Yearly", "₹556,000", "Expected return goal")
-    col2.metric("Target Time", "365 Days", "Goal time")
-    col3.metric("Max Drawdown (5%)", "₹55,600", "Allowed")
-    col1.metric("Expected Value/Trade", "₹2,446.4", "With 35% win rate")
-st.markdown("---")
+col1, col2, col3 = st.columns([2,2,2])
+col1.metric("Total Capital", f"₹{total_capital:,.0f}", "Trading capital")
+col2.metric("Position Size", f"₹{position_size:,.0f}", "Per trade exposure")
+col3.metric("Risk per Trade (2%)", f"₹{risk_per_trade:,.0f}", "Loss per trade")
+col1.metric("Risk of Capital (0.5%)", f"₹{risk_of_total_capital:,.0f}", "Max loss per trade")
+col2.metric("Reward per Win", f"₹{reward_per_win:,.0f}", "Target profit per trade")
+col3.metric("Win Rate (Accuracy)", f"{win_rate}%", "Based on system")
+col1.metric("Target Profit (50%) Yearly", f"₹{target_profit_yearly:,.0f}", "Expected return goal")
+col2.metric("Target Time", f"{target_time_days} Days", "Goal time")
+col3.metric("Max Drawdown (5%)", f"₹{max_drawdown:,.0f}", "Allowed")
+col1.metric("Expected Value/Trade", f"₹{ev_per_trade:,.1f}", f"With {win_rate}% win rate")
+col2.metric("Trades Needed for Target", f"{trades_needed:,.0f}", "To gain 50% of capital")
+col3.metric("Initial Trade Capital", f"₹{initial_trade_capital:,.0f}", "Stage-I 10%-20% for testing")
 
-# -- STRATEGY PROGRESSION --
-st.markdown("### 🚀 <span style='color:#a21caf;'>Strategy Progression & Scaling</span>", unsafe_allow_html=True)
-with st.container():
-    st.info("**Stage I:** Initial Trade Capital — 10% to 20% for Testing")
-    st.success("**Stage II:** Profitable Trades Confidence After 1 Trade — 30% to 50% Risk Financed")
-    st.success("**Stage III:** Profitable Trades Confidence After 8-10 Trades — 100% Fully Financed")
-    st.success("**Stage IV:** Profitable Trades Confidence After 10 Trades — 100% + Increased Position Size (Compounding)")
-st.markdown("---")
-
-# -- TRADE FREQUENCY & TIMING --
+# ---- TRADE FREQUENCY ----
 st.markdown("### 📊 <span style='color:#f59e42;'>Trade Frequency & Timing</span>", unsafe_allow_html=True)
-with st.container():
-    col1, col2, col3 = st.columns([2,2,2])
-    col1.metric("Trades Needed for Target", "227", "To gain 50% of capital")
-    col2.metric("Avg Day Holding (Win)", "12", "Winning trades")
-    col3.metric("Avg Day Holding (Loss)", "4", "Losing trades")
-    col1.metric("Expected Time/Trade", "2", "ET")
-    col2.metric("Time Needed for Target", "364 Days", "")
+col4, col5, col6 = st.columns([2,2,2])
+col4.metric("Avg Day Holding (Win)", f"{holding_win}", "Winning trades")
+col5.metric("Avg Day Holding (Loss)", f"{holding_loss}", "Losing trades")
+col6.metric("ET per Trade", f"{et_per_trade:.1f}", "Expected Time/Trade")
+col4.metric("Time Needed for Target", f"{time_needed_days:,.0f} Days", "")
+col5.metric("Lossing Trades Caution", f"{lossing_trades_caution:,.0f}", "Stop after these back-to-back stop losses")
+col6.metric("Max Drawdown", f"₹{max_drawdown:,.0f}", "Max allowed")
+
 st.markdown("---")
 
-# -- RISK MANAGEMENT RULES --
+# ---- STRATEGY PROGRESSION ----
+st.markdown("### 🚀 <span style='color:#a21caf;'>Strategy Progression & Scaling</span>", unsafe_allow_html=True)
+st.info("**Stage I:** Initial Trade Capital — 10% to 20% for Testing")
+st.success("**Stage II:** Profitable Trades Confidence After 1 Trade — 30% to 50% Risk Financed")
+st.success("**Stage III:** Profitable Trades Confidence After 8-10 Trades — 100% Fully Financed")
+st.success("**Stage IV:** Profitable Trades Confidence After 10 Trades — 100% + Increased Position Size (Compounding)")
+st.markdown("---")
+
+# ---- RISK MANAGEMENT ----
 st.markdown("### ⚠️ <span style='color:#f43f5e;'>Risk Management Rules</span>", unsafe_allow_html=True)
-with st.container():
-    st.warning("⏸️ **Slow Down:** After 5 consecutive stop losses")
-    st.error("🛑 **Stop Trading for a Week:** After 10 consecutive stop losses")
-    st.error("🛑 **Stop Trading for a Month:** After 15 consecutive stop losses")
-    st.info("🍵 **Break Taken:** After 25 consecutive stop losses")
-    st.success("🚀 **Increase Position Size:** After 5 consecutive targets hit")
-    st.error("❗ **Losing Trades Caution:** Stop Trading after 25 back-to-back stop losses")
+st.warning("⏸️ **Slow Down:** After 5 consecutive stop losses")
+st.error("🛑 **Stop Trading for a Week:** After 10 consecutive stop losses")
+st.error("🛑 **Stop Trading for a Month:** After 15 consecutive stop losses")
+st.info("🍵 **Break Taken:** After 25 consecutive stop losses")
+st.success("🚀 **Increase Position Size:** After 5 consecutive targets hit")
+st.error("❗ **Losing Trades Caution:** Stop Trading after 25 back-to-back stop losses")
 st.markdown("---")
 
-# -- MOTIVATIONAL LINES SEGREGATED BY EMOTION --
+# ---- MOTIVATIONAL LINES - SEGREGATED ----
 st.markdown("<h2 style='color:#f59e42; text-align:center;'>🧠 Trader Mindset Punchlines</h2>", unsafe_allow_html=True)
 
 tab1, tab2, tab3 = st.tabs(["😨 Fear", "🤑 Greed", "💪 Confidence"])
@@ -114,7 +137,7 @@ with tab3:
 
 st.markdown("---")
 
-# -- BONUS LINES --
+# ---- BONUS LINES ----
 st.markdown("<h2 style='color:#f43f5e; text-align:center;'>🚀 Bonus Power Lines (Wallpaper ke liye)</h2>", unsafe_allow_html=True)
 bonus_lines = [
     "Market me entry sab lete hain, par exit sirf disciplined log karte hain.",
