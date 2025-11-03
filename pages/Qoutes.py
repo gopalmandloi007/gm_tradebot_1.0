@@ -1,151 +1,120 @@
 import streamlit as st
 import random
-from datetime import date
 
-# ==========================
-# Market Wizards — Tabbed Quotes
-# English + Hinglish (Hindi-style) side-by-side
-# ==========================
+# ============================
+# 🌟 APP CONFIG
+# ============================
+st.set_page_config(
+    page_title="Market Wizard Quotes Wall",
+    page_icon="💹",
+    layout="wide"
+)
 
-st.set_page_config(page_title="Market Wizards Quotes (Hinglish)", layout="wide")
+st.title("💬 Market Wizard Daily Quote Wall")
+st.markdown("### Read, Reflect & Repeat — Fear | Greed | Overconfidence | FOMO")
 
-# --- Quotes grouped by category (Hinglish translations) ---
-CATEGORIES = {
-    "🧠 Fear (Dar & Risk)": [
-        {"en": "The key to making money is to not lose money.", "hi": "Paise kamane ki kunji: paise na khona."},
-        {"en": "First rule of trading: Don't blow up. Everything else comes later.", "hi": "Trading ka pehla niyam: kabhi account na udaao. Baaki sab baad mein."},
-        {"en": "Protect your capital like your life depends on it — because it does.", "hi": "Apni punji ki suraksha karo jaise zindagi uspar nirbhar ho — kyunki sach mein hoti hai."},
-        {"en": "If you take care of the losses, the profits will take care of themselves.", "hi": "Losses ko control karo; profits khud thik ho jaayenge."},
-        {"en": "When in doubt, get out.", "hi": "Jab sandeh ho, position chod do."},
-        {"en": "You can always re-enter — but you can never recover from total loss.", "hi": "Tum phir se entry le sakte ho, lekin total wipeout se wapas aana mushkil hai."},
-        {"en": "Cut losses, cut losses, and cut losses.", "hi": "Nuksan chhota karo, baar-baar yaad dilao — cut losses."},
-        {"en": "Fear and greed are constant — your job is to stay neutral.", "hi": "Dar aur lalach hamesha rahte hain — tumhara kaam neutral rehna hai."},
-        {"en": "If you can't handle small losses, you'll never see big gains.", "hi": "Agar chhote loss bardasht nahi kar sakte, bade munafe nahi dekhoge."}
+# ----------------------------
+# 🧠 QUOTES DATA
+# ----------------------------
+quotes = {
+    "Fear": [
+        ("Cut your losses quickly.", "Apne loss ko jaldi cut karo, market ke against mat ladho."),
+        ("Hope is not a strategy.", "Umeed strategy nahi hoti — plan banao, dua nahi."),
+        ("Define your risk before you enter.", "Trade lene se pehle apna risk define karo."),
+        ("Don’t fight the market.", "Market ke against mat ladho, uske sath flow karo.")
     ],
-
-    "💰 Greed (Lalach & Patience)": [
-        {"en": "Don't focus on making money; focus on protecting what you have.", "hi": "Sirf paise kamane par mat jaao; jo tumhare paas hai usko bachao."},
-        {"en": "The big money is made in the sitting, not in the trading.", "hi": "Bada munafa aksar wait karne se aata hai, baar-baar trading se nahi."},
-        {"en": "Wait for the fat pitch — not every move is yours to catch.", "hi": "Fat pitch ka intezaar karo — har move tumhara nahi hota."},
-        {"en": "Opportunities are like buses — another one always comes.", "hi": "Mauke buses ki tarah hain — ek aur zaroor aayega."},
-        {"en": "Don't chase profits; chase perfection in your process.", "hi": "Profit ke peeche mat bhaago; apne process ko perfect karo."},
-        {"en": "One good trade is worth a hundred average ones.", "hi": "Ek achha trade sau average trades ke barabar hota hai."},
-        {"en": "Patience is the rarest edge in trading.", "hi": "Dhairy hi trading ka sabse anmol edge hai."},
-        {"en": "Good traders wait; great traders wait longer.", "hi": "Acche traders intezaar karte hain; behtareen aur bhi lamba intezaar karte hain."},
-        {"en": "Fortune favors the disciplined.", "hi": "Kismet unka saath deti hai jo anushasit hote hain."}
+    "Greed": [
+        ("Pigs get slaughtered. Take profits when you have them.",
+         "Lalach me mat padho — profit milta hai to secure karo."),
+        ("You don't have to catch every move.", "Market ke har move ko pakadna zaroori nahi."),
+        ("Trade the plan, not your emotions.", "Apne plan par chalo, emotions par nahi."),
+        ("Money is made by sitting, not trading too much.",
+         "Paise kamane me patience chahiye — zyada trading se nahi.")
     ],
-
-    "🚀 Overconfidence (Ahankar & Ego)": [
-        {"en": "Discipline is more important than genius.", "hi": "Anushasan pratibha se zyada mahatvapurn hai."},
-        {"en": "The market rewards consistency, not brilliance.", "hi": "Bazaar consistency ko inaam deta hai, sirf brilliance ko nahi."},
-        {"en": "A good system is useless without discipline.", "hi": "Accha system bhi bekaar hai jab tak tumhara anushasan nahi hai."},
-        {"en": "No system works forever — your flexibility is your real system.", "hi": "Koi system hamesha kaam nahi karega — tumhari lachilapan hi asli system hai."},
-        {"en": "Stay humble before the market, or the market will humble you.", "hi": "Market ke samne vinamra raho, nahi to market tumhe sikhayega."},
-        {"en": "The best traders evolve; the worst defend their ego.", "hi": "Saphal traders badalte rehte hain; nakam apne ego ki raksha karte hain."},
-        {"en": "Your ego is your most expensive position.", "hi": "Tumhara ego tumhara sabse mehnga position hai."},
-        {"en": "If you can’t change your mind, you can’t change your results.", "hi": "Agar tum apna mann nahi badal sakte, to apne parinaam badal nahi paoge."},
-        {"en": "Be quick to admit mistakes — slow to celebrate success.", "hi": "Galtiyon ko jaldi maano, safalta ko dheere manao."}
+    "Overconfidence": [
+        ("The market can remain irrational longer than you can remain solvent.",
+         "Market tumse zyada time tak galat reh sakta hai, isliye overconfident mat ho."),
+        ("Never risk more than you can afford to lose.",
+         "Utna hi risk lo jitna lose karne ki capacity ho."),
+        ("One good trade doesn’t make you a genius.",
+         "Ek accha trade tumhe genius nahi banata."),
+        ("Stay humble or the market will make you humble.",
+         "Namrata se raho, warna market namrata sikha dega.")
     ],
-
-    "⚡ FOMO (Fear of Missing Out & Patience)": [
-        {"en": "You don’t need to catch every wave — just the right ones.", "hi": "Har lehar nahi pakadni — sirf sahi lehar pakdo."},
-        {"en": "A single good trade can change your year — but one mistake can end your career.", "hi": "Ek accha trade tumhara saal badal sakta hai — par ek badi galti career khatam kar sakti hai."},
-        {"en": "Sometimes the best trade is no trade.", "hi": "Kabhi kabhi sabse achha trade, koi trade na karna hota hai."},
-        {"en": "Trade small, think big.", "hi": "Chhote se trade karo, bade socho."},
-        {"en": "Be passionate, not emotional.", "hi": "Junooni raho, bhavuk mat raho."},
-        {"en": "Consistency is the new intelligence.", "hi": "Nirantar hona nayi buddhi hai."},
-        {"en": "Calm mind, clear chart, clean trade.", "hi": "Shaant man, saaf chart, saf trade."},
-        {"en": "Stay humble, stay prepared, stay alive.", "hi": "Vinarmra raho, taiyar raho, zinda raho."}
+    "FOMO": [
+        ("Missing one trade won’t make you poor.",
+         "Ek trade miss hone se tum gareeb nahi ban jaoge."),
+        ("Wait for your pitch, not every pitch.",
+         "Har trade nahi lena, apna perfect setup ka wait karo."),
+        ("Patience is also a position.", "Sabr bhi ek position hoti hai."),
+        ("If you chase trades, you’ll lose focus.",
+         "Agar trade ke peeche bhagoge, focus kho doge.")
     ]
 }
 
-# Flatten all quotes for 'All Quotes' tab
-ALL_QUOTES = []
-for cat, arr in CATEGORIES.items():
-    for q in arr:
-        ALL_QUOTES.append({"cat": cat, "en": q["en"], "hi": q["hi"]})
+# Merge all for “All Quotes” tab
+all_quotes = []
+for cat, lst in quotes.items():
+    for q in lst:
+        all_quotes.append((cat, q[0], q[1]))
 
-# --- Styling ---
-st.markdown("<style>
-body {background-color: #0f1724; color: #e6eef8}
-div.block-container {padding-top: 1rem;}
-.card {background: linear-gradient(145deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); border-radius: 8px; padding: 16px; margin-bottom: 12px;}
-.en {font-weight: 700; font-size: 18px; color: #ffffff}
-.hi {font-style: italic; color: #cde7ff}
-.tab-header {font-size:20px; font-weight:700; color:#fff}
-</style>", unsafe_allow_html=True)
+# ----------------------------
+# 🎨 CUSTOM CARD FUNCTION
+# ----------------------------
+def quote_card(eng, hin, color):
+    st.markdown(
+        f"""
+        <div style="background-color:{color};padding:15px;border-radius:15px;margin-bottom:10px;
+        box-shadow:0 2px 5px rgba(0,0,0,0.2)">
+        <h4 style="color:white;">💬 {eng}</h4>
+        <p style="color:#f8f9fa;font-size:17px;">📝 {hin}</p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-# --- Header ---
-col1, col2 = st.columns([3,1])
-with col1:
-    st.title("Market Wizards — Daily Mindset (Hinglish)")
-    st.markdown("_Tabs: Fear | Greed | Overconfidence | FOMO | All Quotes — English + Hinglish side-by-side_")
-with col2:
-    if st.button("🎯 Random Inspirational Quote"):
-        r = random.choice(ALL_QUOTES)
-        st.success(f"{r['en']} — {r['hi']}")
+# ----------------------------
+# 🗂️ TAB LAYOUT
+# ----------------------------
+tabs = st.tabs(["😨 Fear", "💰 Greed", "😎 Overconfidence", "⚡ FOMO", "🌈 All Quotes"])
 
-# --- Tabs ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🧠 Fear", "💰 Greed", "🚀 Overconfidence", "⚡ FOMO", "🌟 All Quotes"])
+tab_colors = ["#2b4c7e", "#146356", "#7a3e65", "#8b2635", "#374045"]
 
-with tab1:
-    st.markdown("<div class='tab-header'>Fear & Risk Control</div>", unsafe_allow_html=True)
-    for q in CATEGORIES["🧠 Fear (Dar & Risk)"]:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        c1, c2 = st.columns([6,6])
-        with c1:
-            st.markdown(f"<div class='en'>🔊 {q['en']}</div>", unsafe_allow_html=True)
-        with c2:
-            st.markdown(f"<div class='hi'>✍️ {q['hi']}</div>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+for idx, (tab, (cat, color)) in enumerate(zip(tabs, zip(quotes.keys(), tab_colors))):
+    with tab:
+        st.markdown(f"### {cat} Quotes — Read and Reflect ✨")
+        for eng, hin in quotes[cat]:
+            quote_card(eng, hin, color)
 
-with tab2:
-    st.markdown("<div class='tab-header'>Greed & Patience</div>", unsafe_allow_html=True)
-    for q in CATEGORIES["💰 Greed (Lalach & Patience)"]:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        c1, c2 = st.columns([6,6])
-        with c1:
-            st.markdown(f"<div class='en'>🔊 {q['en']}</div>", unsafe_allow_html=True)
-        with c2:
-            st.markdown(f"<div class='hi'>✍️ {q['hi']}</div>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+# ----------------------------
+# 🌟 ALL QUOTES TAB
+# ----------------------------
+with tabs[4]:
+    st.markdown("### All Quotes (Fear + Greed + Overconfidence + FOMO)")
+    for cat, eng, hin in all_quotes:
+        quote_card(f"[{cat}] {eng}", hin, "#222831")
 
-with tab3:
-    st.markdown("<div class='tab-header'>Overconfidence & Ego</div>", unsafe_allow_html=True)
-    for q in CATEGORIES["🚀 Overconfidence (Ahankar & Ego)"]:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        c1, c2 = st.columns([6,6])
-        with c1:
-            st.markdown(f"<div class='en'>🔊 {q['en']}</div>", unsafe_allow_html=True)
-        with c2:
-            st.markdown(f"<div class='hi'>✍️ {q['hi']}</div>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-with tab4:
-    st.markdown("<div class='tab-header'>FOMO & Patience</div>", unsafe_allow_html=True)
-    for q in CATEGORIES["⚡ FOMO (Fear of Missing Out & Patience)"]:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        c1, c2 = st.columns([6,6])
-        with c1:
-            st.markdown(f"<div class='en'>🔊 {q['en']}</div>", unsafe_allow_html=True)
-        with c2:
-            st.markdown(f"<div class='hi'>✍️ {q['hi']}</div>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-with tab5:
-    st.markdown("<div class='tab-header'>All Quotes — English + Hinglish</div>", unsafe_allow_html=True)
-    for i, q in enumerate(ALL_QUOTES, 1):
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        c1, c2 = st.columns([1,4])
-        with c1:
-            st.markdown(f"**{i}.**")
-        with c2:
-            st.markdown(f"<div class='en'>🔊 {q['en']}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='hi'>✍️ {q['hi']}</div>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-# Footer
+# ----------------------------
+# 🎯 RANDOM QUOTE GENERATOR
+# ----------------------------
 st.markdown("---")
-st.caption("Developed for daily mindset practice — Quotes adapted into Hinglish for easy daily reading. Not financial advice.")
+st.subheader("💡 Random Inspirational Quote for Today")
 
-# End of file
+if st.button("✨ Show Random Quote"):
+    cat, eng, hin = random.choice(all_quotes)
+    quote_card(f"[{cat}] {eng}", hin, "#4a47a3")
+else:
+    st.info("Click above to get your daily trading wisdom 💭")
+
+# ----------------------------
+# ✍️ FOOTER
+# ----------------------------
+st.markdown(
+    """
+    <hr>
+    <center>
+    <p style='color:gray;'>Made with ❤️ by Gopal Mandloi for Daily Mind Discipline 📈</p>
+    </center>
+    """,
+    unsafe_allow_html=True
+)
