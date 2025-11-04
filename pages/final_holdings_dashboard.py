@@ -636,7 +636,7 @@ expected_time_per_trade_disp = expected_time_per_trade
 # --- Show concise KPI metrics ---
 st.subheader("📊 Quick KPIs (spreadsheet mapping)")
 k1, k2, k3, k4 = st.columns(4)
-k1.metric("Position Size (B3)", f"₹{position_size:,.0f}", f"= B2 * {position_size_pct:.2%}")
+k1.metric("Position Size", f"₹{position_size:,.0f}", f"= B2 * {position_size_pct:.2%}")
 k2.metric("Risk per Trade (B4)", f"₹{risk_per_trade:,.0f}", f"= B3 * {risk_pct_per_trade:.2%}")
 k3.metric("Reward per Win (B5)", f"₹{reward_per_win:,.0f}", f"= B4 * {reward_multiplier}R")
 k4.metric("Target Amount (B7)", f"₹{target_amount:,.0f}", f"= B2 * {target_return_pct:.2%}")
