@@ -563,76 +563,54 @@ if not df.empty:
         st.write("Could not render SL & Targets table —", str(e))
 
 # ------------------ Trading Plan Calculations (EV, ET, Trades needed) ------------------
-st.markdown("---")
-st.header("🔢 Trading Plan — Expected Value (EV) & Expected Time (ET)")
 
-# allow user override or use trade-log
-st.info("Tip: Upload a trade-log (CSV) for real win-rate / avg days OR enter manual values below.")
-trade_log_file = st.file_uploader("Upload trade-log CSV (optional; columns: entry_date, exit_date, pnl)", type=["csv"])
+st.header("📈 Trading Plan — Target Projection")
 
-trade_log_df = None
-if trade_log_file is not None:
-    try:
-        trade_log_df = pd.read_csv(trade_log_file, parse_dates=["entry_date", "exit_date"])
-        st.success("Trade log loaded.")
-    except Exception as e:
-        st.error("Could not load trade log: " + str(e))
-        trade_log_df = None
+# Inputs
+target_return_pct = st.number_input("🎯 Target Portfolio Return (%)", value=DEFAULT_TARGET_RETURN_PCT, step=5.0)
+win_rate = st.number_input("✅ Win Rate (%)", value=DEFAULT_WIN_RATE * 100, step=1.0) / 100.0
+reward_risk_ratio = st.number_input("💹 Reward : Risk Ratio", value=reward_risk_ratio, step=0.1)
+risk_per_trade_pct = st.number_input("⚠️ Risk per Trade (%)", value=DEFAULT_RISK_PCT, step=0.1) / 100.0
+avg_win_days = st.number_input("📅 Avg Days per Winning Trade", value=avg_win_days, step=1)
+avg_loss_days = st.number_input("📅 Avg Days per Losing Trade", value=avg_loss_days, step=1)
 
-# Manual parameters (if trade-log not present)
-col1, col2, col3 = st.columns(3)
-manual_win_rate = col1.number_input("Win rate (%) (if no trade-log)", min_value=1.0, max_value=99.0, value=35.0) / 100.0
-manual_avg_win_days = col2.number_input("Avg win days", min_value=1, max_value=90, value=avg_win_days)
-manual_avg_loss_days = col3.number_input("Avg loss days", min_value=1, max_value=30, value=avg_loss_days)
+# Calculations
+expected_value_per_trade = (win_rate * reward_risk_ratio) - (1 - win_rate)
+expected_value_pct = expected_value_per_trade * risk_per_trade_pct * 100  # in %
+expected_value_absolute = capital * (expected_value_per_trade * risk_per_trade_pct)
 
-# Decide used statistics
-if trade_log_df is not None and not trade_log_df.empty:
-    trade_log_df["pnl"] = pd.to_numeric(trade_log_df["pnl"], errors="coerce").fillna(0.0)
-    trade_log_df["entry_date"] = pd.to_datetime(trade_log_df["entry_date"], errors="coerce")
-    trade_log_df["exit_date"] = pd.to_datetime(trade_log_df["exit_date"], errors="coerce")
-    wins = trade_log_df[trade_log_df["pnl"] > 0]
-    losses = trade_log_df[trade_log_df["pnl"] <= 0]
-    used_win_rate = len(wins) / max(1, len(trade_log_df))
-    used_avg_win_days = int(wins["exit_date"].sub(wins["entry_date"]).dt.days.mean()) if not wins.empty else manual_avg_win_days
-    used_avg_loss_days = int(losses["exit_date"].sub(losses["entry_date"]).dt.days.mean()) if not losses.empty else manual_avg_loss_days
+# Expected holding days per trade (weighted avg)
+expected_days_per_trade = (win_rate * avg_win_days) + ((1 - win_rate) * avg_loss_days)
+
+# How many trades to achieve target
+target_multiplier = target_return_pct / 100.0
+if expected_value_per_trade > 0:
+    required_trades = math.log(1 + target_multiplier) / math.log(1 + (expected_value_per_trade * risk_per_trade_pct))
+    required_trades = math.ceil(required_trades)
 else:
-    used_win_rate = manual_win_rate
-    used_avg_win_days = manual_avg_win_days
-    used_avg_loss_days = manual_avg_loss_days
+    required_trades = float("inf")
 
-p_win = used_win_rate
-p_loss = 1.0 - p_win
-
-# risk amount per trade
-risk_amount = capital * risk_pct_per_trade
-reward_amount = reward_risk_ratio * risk_amount
-
-# EV per trade monetary
-ev_per_trade = (p_win * reward_amount) - (p_loss * risk_amount)
-
-# Expected days per trade
-expected_days_per_trade = (p_win * used_avg_win_days) + (p_loss * used_avg_loss_days)
-
-# Trades needed to reach target
-target_return_pct = st.number_input("Target return (%) of capital", min_value=1.0, max_value=500.0, value=DEFAULT_TARGET_RETURN_PCT)
-target_amount = capital * (target_return_pct / 100.0)
-trades_needed = (target_amount / ev_per_trade) if ev_per_trade > 0 else math.inf
-expected_total_days = trades_needed * expected_days_per_trade if math.isfinite(trades_needed) else math.inf
-
-# Display EV/ET
-st.subheader("🧮 EV & Time")
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Win rate (used)", f"{p_win*100:.2f}%")
-c2.metric("EV per trade (₹)", f"{ev_per_trade:,.2f}")
-c3.metric("Avg days/trade", f"{expected_days_per_trade:.1f} days")
-c4.metric("Trades needed (to hit target)", f"{math.ceil(trades_needed) if math.isfinite(trades_needed) else '∞'}")
-
-if math.isfinite(expected_total_days):
-    months = expected_total_days / 30.0
-    st.write(f"- Target amount: ₹{target_amount:,.0f} ({target_return_pct:.1f}% of capital)")
-    st.write(f"- Expected time to reach target: ~{int(expected_total_days)} days (~{months:.1f} months)")
+# Expected total time (in days)
+if math.isfinite(required_trades):
+    total_days_required = required_trades * expected_days_per_trade
 else:
-    st.warning("Strategy EV ≤ 0 → trades needed is infinite. Adjust R, win-rate, or risk-per-trade.")
+    total_days_required = float("inf")
+
+# Display Results
+st.subheader("📊 Expected Performance Summary")
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Expected Value per Trade (₹)", f"{expected_value_absolute:,.2f}")
+col2.metric("Expected Value per Trade (%)", f"{expected_value_pct:,.3f}%")
+col3.metric("Trades Required for Target", f"{required_trades}")
+col4.metric("Expected Time (Days)", f"{total_days_required:,.0f}")
+
+# Optional: Show interpretation
+st.markdown(f"""
+### 🧠 Interpretation
+- **EV per Trade:** {expected_value_pct:.2f}% means on average, your capital grows by this % each trade (after losses).  
+- **Required Trades:** You need around **{required_trades} trades** to achieve **{target_return_pct}% total portfolio growth**.  
+- **Estimated Time:** ≈ **{total_days_required:.0f} days** assuming your average holding times remain same.  
+""")
 
 # ------------------ Drawdown & Stress Tests ------------------
 st.subheader("📉 Drawdown Scenarios & Stress Tests")
