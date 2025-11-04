@@ -701,10 +701,6 @@ plan_summary = {
 # ------------------ End of Trading Plan Calculations ------------------
 
 
-st.subheader("📋 Trading Parameters Summary")
-df_param = pd.DataFrame(param_data, columns=["Parameter", "Value", "Notes"])
-st.dataframe(df_param, use_container_width=True)
-
 # ---- Stage Guidance ----
 st.markdown("""
 ### 🧭 Stage Guidance & Position Management
