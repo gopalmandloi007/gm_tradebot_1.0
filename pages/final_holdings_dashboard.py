@@ -564,28 +564,45 @@ if not df.empty:
 
 # ------------------ Trading Plan Calculations (EV, ET, Trades needed) ------------------
 
-st.header("📈 Trading Plan — Target Projection")
+st.set_page_config(page_title="Trading Plan Dashboard", layout="wide")
 
-# Inputs
-target_return_pct = st.number_input("🎯 Target Portfolio Return (%)", value=DEFAULT_TARGET_RETURN_PCT, step=5.0)
-win_rate = st.number_input("✅ Win Rate (%)", value=DEFAULT_WIN_RATE * 100, step=1.0) / 100.0
-reward_risk_ratio = st.number_input("💹 Reward : Risk Ratio", value=reward_risk_ratio, step=0.1)
-risk_per_trade_pct = st.number_input("⚠️ Risk per Trade (%)", value=DEFAULT_RISK_PCT, step=0.1) / 100.0
-avg_win_days = st.number_input("📅 Avg Days per Winning Trade", value=avg_win_days, step=1)
-avg_loss_days = st.number_input("📅 Avg Days per Losing Trade", value=avg_loss_days, step=1)
+st.title("📈 Trading Plan Dashboard — Auto Calculator (by Gopal Mandloi)")
 
-# Calculations
+# ---------------------- USER INPUTS ----------------------
+st.header("🔧 Input Parameters")
+
+capital = st.number_input("💰 Total Capital (₹)", value=1112000.0, step=10000.0)
+position_size_pct = st.number_input("📦 Position Size (% of Capital per trade)", value=10.0, step=1.0) / 100.0
+risk_pct_per_trade = st.number_input("⚠️ Risk per Trade (%)", value=2.0, step=0.5) / 100.0
+total_risk_cap_pct = st.number_input("🔻 Risk of Total Capital (%)", value=0.5, step=0.1) / 100.0
+reward_risk_ratio = st.number_input("💹 Reward : Risk Ratio", value=5.0, step=0.5)
+win_rate = st.number_input("✅ Win Rate (Accuracy %)", value=35.0, step=1.0) / 100.0
+target_profit_pct = st.number_input("🎯 Target Profit (Yearly %)", value=50.0, step=5.0) / 100.0
+target_days = st.number_input("📅 Target Time (Days)", value=365, step=10)
+max_drawdown_pct = st.number_input("📉 Max Drawdown (%)", value=5.0, step=0.5) / 100.0
+avg_day_win = st.number_input("🕒 Avg Holding Days (Winning Trade)", value=12, step=1)
+avg_day_loss = st.number_input("🕓 Avg Holding Days (Losing Trade)", value=4, step=1)
+
+# ---------------------- CALCULATIONS ----------------------
+position_size = capital * position_size_pct
+risk_per_trade = position_size * risk_pct_per_trade
+total_risk_cap = capital * total_risk_cap_pct
+reward_per_win = risk_per_trade * reward_risk_ratio
+target_profit = capital * target_profit_pct
+max_drawdown = capital * max_drawdown_pct
+
+# Expected Value (EV) per trade
 expected_value_per_trade = (win_rate * reward_risk_ratio) - (1 - win_rate)
-expected_value_pct = expected_value_per_trade * risk_per_trade_pct * 100  # in %
-expected_value_absolute = capital * (expected_value_per_trade * risk_per_trade_pct)
+expected_value_pct = expected_value_per_trade * risk_pct_per_trade * 100
+expected_value_absolute = capital * (expected_value_per_trade * risk_pct_per_trade)
 
 # Expected holding days per trade (weighted avg)
-expected_days_per_trade = (win_rate * avg_win_days) + ((1 - win_rate) * avg_loss_days)
+expected_days_per_trade = (win_rate * avg_day_win) + ((1 - win_rate) * avg_day_loss)
 
 # How many trades to achieve target
-target_multiplier = target_return_pct / 100.0
+target_multiplier = target_profit_pct
 if expected_value_per_trade > 0:
-    required_trades = math.log(1 + target_multiplier) / math.log(1 + (expected_value_per_trade * risk_per_trade_pct))
+    required_trades = math.log(1 + target_multiplier) / math.log(1 + (expected_value_per_trade * risk_pct_per_trade))
     required_trades = math.ceil(required_trades)
 else:
     required_trades = float("inf")
@@ -596,83 +613,70 @@ if math.isfinite(required_trades):
 else:
     total_days_required = float("inf")
 
-# Display Results
-st.subheader("📊 Expected Performance Summary")
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Expected Value per Trade (₹)", f"{expected_value_absolute:,.2f}")
-col2.metric("Expected Value per Trade (%)", f"{expected_value_pct:,.3f}%")
-col3.metric("Trades Required for Target", f"{required_trades}")
-col4.metric("Expected Time (Days)", f"{total_days_required:,.0f}")
+# Losing trades caution
+losing_trades_caution = max(1, int(total_risk_cap / risk_per_trade))
 
-# Optional: Show interpretation
+# ---------------------- TABLE DATA ----------------------
+data = [
+    ["Total Capital", f"{capital:,.0f}", "Trading capital"],
+    ["Position Size", f"{position_size:,.0f}", "Per trade exposure"],
+    ["Risk per Trade (2%)", f"{risk_per_trade:,.0f}", "Loss per trade"],
+    ["Risk of Total Capital (0.5%)", f"{total_risk_cap:,.0f}", "Max loss per trade"],
+    ["Reward per Win", f"{reward_per_win:,.0f}", "Target profit per trade"],
+    ["Win Rate (Accuracy)", f"{win_rate*100:.2f}", "Based on system performance"],
+    ["Target Profit (50% Yearly)", f"{target_profit:,.0f}", "Expected return goal"],
+    ["Target Time (One Year)", f"{target_days}", "Expected return goal time"],
+    ["Max Drawdown (5%)", f"{max_drawdown:,.0f}", "Max drawdown allowed 5% of total capital"],
+    ["Expected Value per Trade", f"{expected_value_absolute:,.2f}", f"EV = ({win_rate:.2f}×{reward_risk_ratio}) - ({1-win_rate:.2f})"],
+    ["Expected Value per Trade (%)", f"{expected_value_pct:.3f}%", "Average return % per trade"],
+    ["Trades Needed for Target", f"{required_trades}", "Required trades to gain 50% of capital"],
+    ["Avg Day Holding (Win)", f"{avg_day_win}", "Average holding days for winning trade"],
+    ["Avg Day Holding (Loss)", f"{avg_day_loss}", "Average holding days for losing trade"],
+    ["Expected Time per Trade", f"{expected_days_per_trade:.2f}", "Weighted avg days per trade"],
+    ["Time Needed for Target (Days)", f"{total_days_required:,.0f}", "Approx time to reach target"],
+    ["Losing Trades Caution (A/F N Trades)", f"{losing_trades_caution}", "Stop trading after these many consecutive losses"],
+    ["Stage-I (Initial Trade Capital)", f"{position_size:,.0f}", "Use 10–20% capital for testing"],
+    ["Stage-II (Confidence Build)", "1", "After 1 profitable trade, increase exposure to 30–50%"],
+    ["Stage-III (Fully Financed)", "8–10", "After 8–10 winning trades, use 100% capital"],
+    ["Stage-IV (Compounding Phase)", "10+", "Increase position size gradually after consistent wins"],
+    ["Slow Down", "-", "Back-to-back 5 stop losses"],
+    ["Stop Trading for a Week", "-", "Back-to-back 10 stop losses"],
+    ["Stop Trading for a Month", "-", "Back-to-back 15 stop losses"],
+    ["Break Taken", "-", "After 25 consecutive stop losses"],
+    ["Increase Position Size", "-", "Back-to-back 5 targets hit"],
+]
+
+df = pd.DataFrame(data, columns=["Parameter", "Value", "Notes"])
+
+# ---------------------- DISPLAY ----------------------
+st.subheader("📊 Trading Plan Summary Table")
+st.dataframe(df, use_container_width=True, hide_index=True)
+
+# Download option
+csv = df.to_csv(index=False).encode("utf-8")
+st.download_button("📥 Download this Table as CSV", csv, "trading_plan_summary.csv", "text/csv")
+
+# ---------------------- INTERPRETATION ----------------------
 st.markdown(f"""
-### 🧠 Interpretation
-- **EV per Trade:** {expected_value_pct:.2f}% means on average, your capital grows by this % each trade (after losses).  
-- **Required Trades:** You need around **{required_trades} trades** to achieve **{target_return_pct}% total portfolio growth**.  
-- **Estimated Time:** ≈ **{total_days_required:.0f} days** assuming your average holding times remain same.  
+---
+
+### 🧠 Interpretation & Key Insights
+
+- **Expected Value (EV)** = {expected_value_pct:.3f}% per trade → your average return (after wins & losses).  
+- **Trades Required:** ≈ **{required_trades} trades** to reach a **{target_profit_pct*100:.0f}%** return target.  
+- **Total Time Needed:** ≈ **{total_days_required:,.0f} days** assuming consistent performance and same holding period.  
+- **Expected Holding Time:** ~{expected_days_per_trade:.2f} days per trade (weighted average).  
+
+#### ⚠️ Discipline Alerts
+- ❌ Stop trading after **{losing_trades_caution} consecutive stop-losses**.  
+- 🧘 Take a **1-week break after 10** consecutive losses.  
+- 💪 Increase position size only after **5 consecutive targets hit**.  
+
+---
+
+This model helps visualize realistic expectations for compounding-based trading growth.  
+Keep updating your **Win Rate**, **Risk %,** and **Reward Ratio** based on real data every quarter.  
 """)
-
-# ------------------ Drawdown & Stress Tests ------------------
-st.subheader("📉 Drawdown Scenarios & Stress Tests")
-consecutive_losses_input = st.number_input("Simulate N consecutive stop-losses", min_value=1, max_value=200, value=10)
-consec_loss_amount = consecutive_losses_input * risk_amount
-st.metric(f"Loss for {consecutive_losses_input} consecutive SLs", f"₹{consec_loss_amount:,.0f}")
-
-# Stress: All open positions SL
-all_open_sl_amount = df["initial_risk"].sum()
-st.metric("If all open positions hit SL (sum)", f"₹{all_open_sl_amount:,.0f}")
-allowed_drawdown_pct = st.sidebar.number_input("Alert if drawdown exceeds (%)", min_value=1.0, max_value=50.0, value=5.0)
-st.write(f"- Allowed drawdown: ₹{capital * (allowed_drawdown_pct/100.0):,.0f}")
-
-# cumulative chart of consecutive losses
-cons_df = pd.DataFrame({
-    "trade_no": list(range(1, int(consecutive_losses_input)+1)),
-    "cumulative_loss": np.cumsum([risk_amount]*int(consecutive_losses_input))
-})
-fig_cons = px.line(cons_df, x="trade_no", y="cumulative_loss", title=f"Cumulative Loss for {consecutive_losses_input} consecutive SLs")
-st.plotly_chart(fig_cons, use_container_width=True)
-
-# ------------------ Phase detection based on holdings & history ------------------
-st.subheader("📅 Phase Detection & Position Suggestions")
-# Heuristics:
-# - If recent realized_pnl (from holdings) mostly positive => Stage-II/III
-# - If many consecutive open losses or initial risk > allowed => slow down / reduce position size
-
-# Use realized_pnl across holdings as proxy (may be limited)
-realized_available = df["realized_pnl"].notna().any()
-if realized_available:
-    wins_count = int((df["realized_pnl"] > 0).sum())
-    losses_count = int((df["realized_pnl"] < 0).sum())
-    if wins_count >= 10:
-        detected_phase = "Stage-III / Compounding (Strong)"
-    elif wins_count >= 1:
-        detected_phase = "Stage-II / Risk Financed"
-    elif losses_count >= 1 and wins_count == 0:
-        detected_phase = "Stage-I / Testing (Drawdown)"
-    else:
-        detected_phase = "Stage-I (Testing)"
-    st.write(f"- Holdings-based wins: **{wins_count}**, losses: **{losses_count}**")
-    st.metric("Detected Phase", detected_phase)
-else:
-    st.info("No realized PnL in holdings to auto-detect phase. Use trade-log for better detection or set manually.")
-    detected_phase = st.selectbox("Set current phase manually", ["Stage-I (Testing)", "Stage-II (Risk Financed)", "Stage-III (Compounding)", "Stage-IV (Aggressive)"])
-
-# Position size guidance based on phase & drawdown
-st.markdown("**Position sizing guidance**")
-if "Testing" in detected_phase:
-    st.write("- Use **10% or less** of your capital for testing. Prefer small position sizes (Stage-I).")
-elif "Risk Financed" in detected_phase:
-    st.write("- Use **30–50%** of the planned position sizes. Gradually increase once confidence builds.")
-elif "Compounding" in detected_phase:
-    st.write("- You can use **full planned position sizing** but keep strict SL & risk controls.")
-else:
-    st.write("- Aggressive: increase sizing only if EV is proven positive and drawdown tolerances are respected.")
-
-# Example: when to reduce/increase position size
-st.markdown("**When to reduce position size**")
-st.write("- Back-to-back 5 SLs: Reduce position size by 50%")
-st.write("- Back-to-back 10 SLs: Stop trading for 1 week and reduce size to initial test size")
-st.write("- Drawdown > allowed %: Stop & review strategy")
 
 # ------------------ Current R per holding & top >5R detection ------------------
 st.subheader("🔥 Current R per Holding & High-R stocks")
