@@ -637,26 +637,26 @@ expected_time_per_trade_disp = expected_time_per_trade
 st.subheader("📊 Quick KPIs (spreadsheet mapping)")
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("Position Size", f"₹{position_size:,.0f}", f"= B2 * {position_size_pct:.2%}")
-k2.metric("Risk per Trade (B4)", f"₹{risk_per_trade:,.0f}", f"= B3 * {risk_pct_per_trade:.2%}")
-k3.metric("Reward per Win (B5)", f"₹{reward_per_win:,.0f}", f"= B4 * {reward_multiplier}R")
-k4.metric("Target Amount (B7)", f"₹{target_amount:,.0f}", f"= B2 * {target_return_pct:.2%}")
+k2.metric("Risk per Trade", f"₹{risk_per_trade:,.0f}", f"= B3 * {risk_pct_per_trade:.2%}")
+k3.metric("Reward per Win", f"₹{reward_per_win:,.0f}", f"= B4 * {reward_multiplier}R")
+k4.metric("Target Amount", f"₹{target_amount:,.0f}", f"= B2 * {target_return_pct:.2%}")
 
 k5, k6, k7, k8 = st.columns(4)
-k5.metric("EV per Trade (B10) ₹", f"₹{ev_per_trade_amount_disp:,.2f}")
-k6.metric("Trades Needed (B11)", f"{trades_needed_ceiled if math.isfinite(trades_needed_ceiled) else '∞'}")
-k7.metric("ET per Trade (B14) days", f"{expected_time_per_trade_disp:.2f}")
+k5.metric("EV per Trade ₹", f"₹{ev_per_trade_amount_disp:,.2f}")
+k6.metric("Trades Needed", f"{trades_needed_ceiled if math.isfinite(trades_needed_ceiled) else '∞'}")
+k7.metric("ET per Trade days", f"{expected_time_per_trade_disp:.2f}")
 k8.metric("Time to Target (days)", f"{int(total_days_needed) if math.isfinite(total_days_needed) else '∞'}")
 
 # --- Build Parameter | Value | Notes table exactly like you requested ---
 table_rows = [
-    ["Total Capital", f"{capital}", "Trading capital (B2)"],
-    ["Position Size", f"=B2*{position_size_pct:.2f} -> {position_size:,.0f}", "Per trade exposure (B3)"],
-    ["Risk per Trade", f"=B3*{risk_pct_per_trade:.2f} -> {risk_per_trade:,.0f}", "Loss per trade (B4)"],
-    ["Reward per Win", f"=B4*{reward_multiplier} -> {reward_per_win:,.0f}", "Target profit per trade (B5)"],
-    ["Win Rate (Accuracy)", f"{win_rate}", "Based on system performance (B6)"],
-    ["Target Profit (50%) Yearly", f"=B2*{target_return_pct:.2f} -> {target_amount:,.0f}", "Expected return goal (B7)"],
-    ["Target Time (days)", f"{target_time_days}", "Expected return goal time (B8)"],
-    ["Max Drawdown (5%)", f"=B2*{max_drawdown_pct:.2f} -> {max_drawdown_amount:,.0f}", "Max drawdown allowed (B9)"],
+    ["Total Capital", f"{capital}", "Trading capital"],
+    ["Position Size", f"=B2*{position_size_pct:.2f} -> {position_size:,.0f}", "Per trade exposure"],
+    ["Risk per Trade", f"=B3*{risk_pct_per_trade:.2f} -> {risk_per_trade:,.0f}", "Loss per trade"],
+    ["Reward per Win", f"=B4*{reward_multiplier} -> {reward_per_win:,.0f}", "Target profit per trade"],
+    ["Win Rate (Accuracy)", f"{win_rate}", "Based on system performance"],
+    ["Target Profit (50%) Yearly", f"=B2*{target_return_pct:.2f} -> {target_amount:,.0f}", "Expected return goal"],
+    ["Target Time (days)", f"{target_time_days}", "Expected return goal time"],
+    ["Max Drawdown (5%)", f"=B2*{max_drawdown_pct:.2f} -> {max_drawdown_amount:,.0f}", "Max drawdown allowed"],
     ["Expected Value per Trade (₹)", f"= (win*B5) - ((1-win)*B4) -> {ev_per_trade_amount_disp:,.2f}", "B10: EV with win-rate"],
     ["Trades Needed for Target", f"=B7 / B10 -> {trades_needed_ceiled if math.isfinite(trades_needed_ceiled) else '∞'}", "B11: Required trades to reach target"],
     ["Avg Day Holding for Winning Trade", f"{avg_win_days}", "B12"],
