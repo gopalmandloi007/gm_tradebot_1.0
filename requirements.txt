@@ -7,3 +7,4 @@ matplotlib
 plotly
 fpdf
 streamlit-extras
+PIL
