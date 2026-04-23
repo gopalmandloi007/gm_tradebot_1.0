@@ -12,7 +12,7 @@ except ImportError:
 url = "https://integrate.definedgesecurities.com/dart/v1/placeorder"
 
 # Aapka session key (Maine .strip() laga diya hai taaki koi hidden space na jaye)
-SESSION_KEY = "LlTDl91Z9TvPsWWpLYRNqdKvBWWSvqMpAmQRh14VQd8ci++UUt/UD5/+H9I0mUMurobUU1rCYi9FMmJ/m9R7tSdaQ4GEOHfUJydSbfuxRoX6vMA/jOIPUQ==".strip()
+SESSION_KEY = "LlTDl91Z9TvmbvF+/mWGVg+r8IVorMfG/O4PVA54y7aQR1u2+tDH3d1UUtkh7hNCtxp7RVzwMy0DD1WxSyJcib/xgPSfRUc6pfN6cN1McO3edANaVvIw4A==".strip()
 
 # API documentation ke hisaab se hum bina 'Bearer' ke test kar rahe hain pehle
 headers = {
