@@ -50,10 +50,17 @@ class DefinedgeClient:
 
     def _auth_headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
+        
+        # 1. Session Key (User authentication ke liye)
         if self.api_session_key:
-            headers["Authorization"] = self.api_session_key  # per docs, not "Bearer ..."
+            headers["Authorization"] = self.api_session_key  
+            
+        # 2. Application Key (POST requests - order place karne ke liye zaroori hai)
+        if self.api_token:
+            headers["api-key"] = self.api_token
+            headers["apikey"] = self.api_token
+            
         return headers
-
     # ---- generic GET/POST (trading API base) ----
     def api_get(self, rel_path: str) -> Any:
         url = rel_path if rel_path.startswith("http") else f"{BASE_API}{rel_path}"
