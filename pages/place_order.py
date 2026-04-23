@@ -265,7 +265,7 @@ if submit:
             "quantity": _safe_str(int(computed_qty)),
             "validity": _safe_str(validity),
             "algo_id": "99999",  # <--- YEH LINE ADD KARNI HAI
-            "amo": "YES" if amo_flag else "",
+            #"amo": "YES" if amo_flag else "",
         }
         trig = st.session_state.get("trigger_price", 0)
         if trig and trig > 0:
