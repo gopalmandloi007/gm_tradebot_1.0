@@ -5,7 +5,7 @@ st.set_page_config(layout="centered")
 st.header("🧪 API Header Tester")
 
 # Password field taaki aapki key screen par na dikhe
-session_key = st.text_input("Paste your FRESH session key here:", type="password")
+session_key = st.text_input("LlTDl91Z9TtA98GOiqzoHgP2qhc5BTuJX2z0AJObyUGPFki69FrWYHKU8dtrR1WXpVNoOTLubgU7+3WUxZRH33LJB/9ZBHSeg63lvQBs4G+y1k4OOSdkDA==:", type="password")
 
 payload = {
     "exchange": "NSE",
