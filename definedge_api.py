@@ -49,17 +49,12 @@ class DefinedgeClient:
         self.api_session_key = key
 
     def _auth_headers(self) -> Dict[str, str]:
+        # Strictly following Definedge API Doc
         headers = {"Content-Type": "application/json"}
         
-        # 1. Session Token (User Auth)
         if self.api_session_key:
-            headers["Authorization"] = self.api_session_key  
-            
-        # 2. App Token (Gateway Auth) - Catching every variation!
-        if self.api_token:
-            headers["api_key"] = self.api_token      # <-- The underscore version (Most likely culprit!)
-            headers["api-key"] = self.api_token      
-            headers["apikey"] = self.api_token       
+            # .strip() ensure karega ki koi extra space na jaye
+            headers["Authorization"] = self.api_session_key.strip()  
             
         return headers
     # ---- generic GET/POST (trading API base) ----
