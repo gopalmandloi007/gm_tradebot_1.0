@@ -2,10 +2,12 @@ import streamlit as st
 import requests
 
 st.set_page_config(layout="centered")
-st.header("🧪 API Header Tester")
+st.header("🧪 The Ultimate API Tester")
 
-# Password field taaki aapki key screen par na dikhe
-session_key = st.text_input("LlTDl91Z9TtA98GOiqzoHgP2qhc5BTuJX2z0AJObyUGPFki69FrWYHKU8dtrR1WXpVNoOTLubgU7+3WUxZRH33LJB/9ZBHSeg63lvQBs4G+y1k4OOSdkDA==:", type="password")
+st.markdown("Pehle apni teeno keys yahan paste karein:")
+session_key = st.text_input("1. Session Key (Aaj ka lamba wala token)", type="password")
+api_token = st.text_input("2. API Token (Jo secrets.toml mein DEFINEDGE_API_TOKEN hai)", type="password")
+uid = st.text_input("3. Client ID / UID (Aapka Definedge login ID)")
 
 payload = {
     "exchange": "NSE",
@@ -22,36 +24,39 @@ payload = {
 url = "https://integrate.definedgesecurities.com/dart/v1/placeorder"
 
 st.write("---")
-st.write("Test kijiye ki Definedge ko kaisa Header chahiye:")
 
-col1, col2 = st.columns(2)
+if st.button("🚀 Fire All Tests!"):
+    if not session_key or not api_token or not uid:
+        st.error("Kripya teeno box bharein!")
+    else:
+        # Test 1: Header with App API Key
+        st.subheader("Test 1: App API Key in Headers")
+        headers_1 = {
+            "Content-Type": "application/json", 
+            "Authorization": session_key.strip(),
+            "api_key": api_token.strip(),
+            "apikey": api_token.strip(),
+            "api-key": api_token.strip()
+        }
+        res_1 = requests.post(url, json=payload, headers=headers_1)
+        st.json(res_1.json())
 
-with col1:
-    st.subheader("Test 1")
-    st.caption("Strict Doc Format (No Bearer)")
-    if st.button("🚀 Run Test 1"):
-        if not session_key:
-            st.warning("Pehle upar Session Key paste karein!")
-        else:
-            headers = {
-                "Content-Type": "application/json", 
-                "Authorization": session_key.strip()
-            }
-            res = requests.post(url, json=payload, headers=headers)
-            st.success(f"Status Code: {res.status_code}")
-            st.json(res.json())
+        # Test 2: App API Key + Bearer
+        st.subheader("Test 2: App API Key + Bearer")
+        headers_2 = {
+            "Content-Type": "application/json", 
+            "Authorization": f"Bearer {session_key.strip()}",
+            "api_key": api_token.strip(),
+            "apikey": api_token.strip(),
+            "api-key": api_token.strip()
+        }
+        res_2 = requests.post(url, json=payload, headers=headers_2)
+        st.json(res_2.json())
 
-with col2:
-    st.subheader("Test 2")
-    st.caption("Cloud Format (With Bearer)")
-    if st.button("🚀 Run Test 2"):
-        if not session_key:
-            st.warning("Pehle upar Session Key paste karein!")
-        else:
-            headers = {
-                "Content-Type": "application/json", 
-                "Authorization": f"Bearer {session_key.strip()}"
-            }
-            res = requests.post(url, json=payload, headers=headers)
-            st.success(f"Status Code: {res.status_code}")
-            st.json(res.json())
+        # Test 3: API Key + UID inside Headers
+        st.subheader("Test 3: App API Key + UID in Headers")
+        headers_3 = headers_1.copy()
+        headers_3["uid"] = uid.strip()
+        headers_3["user"] = uid.strip()
+        res_3 = requests.post(url, json=payload, headers=headers_3)
+        st.json(res_3.json())
