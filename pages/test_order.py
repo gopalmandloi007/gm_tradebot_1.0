@@ -4,7 +4,7 @@ import requests
 url = "https://integrate.definedgesecurities.com/dart/v1/placeorder"
 
 # 1. Yahan apna aaj ka FRESH api_session_key paste karein (Jo login ke baad milta hai)
-SESSION_KEY = "YAHAN_APNA_SESSION_KEY_PASTE_KAREIN" 
+SESSION_KEY = "LlTDl91Z9TsaHd5857zRuMQkqWitbVtCQt/7ldyDLEPlgoEYsZc4VErMi/R8XCOYHwR4n8wwuIExZXm2+mC+p0nPXW3DRCxeqSRqX/ZZsJvjfSUBVt2FJA==" 
 
 headers = {
     "Content-Type": "application/json",
