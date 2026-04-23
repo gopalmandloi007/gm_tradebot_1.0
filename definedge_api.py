@@ -51,14 +51,15 @@ class DefinedgeClient:
     def _auth_headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
         
-        # 1. Session Key (User authentication ke liye)
+        # 1. Session Token (User Auth)
         if self.api_session_key:
             headers["Authorization"] = self.api_session_key  
             
-        # 2. Application Key (POST requests - order place karne ke liye zaroori hai)
+        # 2. App Token (Gateway Auth) - Catching every variation!
         if self.api_token:
-            headers["api-key"] = self.api_token
-            headers["apikey"] = self.api_token
+            headers["api_key"] = self.api_token      # <-- The underscore version (Most likely culprit!)
+            headers["api-key"] = self.api_token      
+            headers["apikey"] = self.api_token       
             
         return headers
     # ---- generic GET/POST (trading API base) ----
