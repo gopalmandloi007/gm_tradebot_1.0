@@ -49,12 +49,11 @@ class DefinedgeClient:
         self.api_session_key = key
 
     def _auth_headers(self) -> Dict[str, str]:
-        # Strictly following Definedge API Doc
         headers = {"Content-Type": "application/json"}
         
         if self.api_session_key:
-            # .strip() ensure karega ki koi extra space na jaye
-            headers["Authorization"] = self.api_session_key.strip()  
+            # Token ke aage 'Bearer ' lagana (Space ke sath!)
+            headers["Authorization"] = f"Bearer {self.api_session_key.strip()}"
             
         return headers
     # ---- generic GET/POST (trading API base) ----
